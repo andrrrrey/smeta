@@ -280,7 +280,11 @@ class AIService:
             score_cutoff=70,
             limit=10
         )
-        pricelist_context = {name: pricelist_cache[name] for name, score in candidates}
+        # Pass work prices to AI (it determines installation/labor costs)
+        pricelist_context = {
+            name: pricelist_cache[name]["work"] if isinstance(pricelist_cache[name], dict) else pricelist_cache[name]
+            for name, score in candidates
+        }
         pricelist_context_str = json.dumps(pricelist_context,
                                            ensure_ascii=False) if pricelist_context else "Нет аналогов в прайс-листе."
 
@@ -647,8 +651,16 @@ class PriceLogic:
             self.section_titles = set()
 
     async def load_pricelist_cache(self, session: AsyncSession):
-        result = await session.execute(select(PriceListItem.name, PriceListItem.price))
-        self.pricelist_cache = {name.lower(): float(price) for name, price in result.all()}
+        result = await session.execute(
+            select(PriceListItem.name, PriceListItem.price, PriceListItem.price_material)
+        )
+        self.pricelist_cache = {
+            name.lower(): {
+                "material": float(price_material or 0.0),
+                "work": float(price or 0.0)
+            }
+            for name, price, price_material in result.all()
+        }
 
     def is_consumable(self, item_name: str) -> bool:
         name_lower = item_name.lower()
@@ -678,14 +690,15 @@ class PriceLogic:
 
         return False
 
-    async def find_internal_price(self, item_name: str) -> Tuple[float, str]:
+    async def find_internal_price(self, item_name: str) -> Tuple[float, float, str]:
+        """Returns (material_price, work_price, source)."""
         if not self.pricelist_cache:
-            return 0.0, "not_found"
+            return 0.0, 0.0, "not_found"
 
         name_lower = item_name.lower()
         if name_lower in self.pricelist_cache:
-            price = self.pricelist_cache[name_lower]
-            return price, "internal"
+            prices = self.pricelist_cache[name_lower]
+            return prices["material"], prices["work"], "internal"
 
         best_match = process.extractOne(
             name_lower,
@@ -696,10 +709,10 @@ class PriceLogic:
 
         if best_match:
             matched_name = best_match[0]
-            price = self.pricelist_cache[matched_name]
-            return price, "internal"
+            prices = self.pricelist_cache[matched_name]
+            return prices["material"], prices["work"], "internal"
 
-        return 0.0, "not_found"
+        return 0.0, 0.0, "not_found"
 
     async def process_specification(
             self,
@@ -792,17 +805,16 @@ class PriceLogic:
                 full_item_name = f"{item_name} {code}"
 
             source = "not_found"
-            price = 0.0
+            price_material = 0.0
+            price_work = 0.0
 
             if is_section:
                 source = "section"
-                price = 0.0
                 quantity = 0.0
             elif self.is_consumable(full_item_name):
                 source = "consumable"
-                price = 0.0
             else:
-                price, source = await self.find_internal_price(full_item_name)
+                price_material, price_work, source = await self.find_internal_price(full_item_name)
 
                 if source == "not_found":
                     await asyncio.sleep(0.5)
@@ -813,7 +825,7 @@ class PriceLogic:
                             item_code=code,
                             pricelist_cache=self.pricelist_cache
                         )
-                        price = ai_response.get("price", 0.0)
+                        price_work = ai_response.get("price", 0.0)
                         source = ai_response.get("source", "not_found")
                     except Exception as e:
                         err_str = str(e)
@@ -823,7 +835,7 @@ class PriceLogic:
                                                               f"OpenAI API Error (Price Search):\n{err_str}")
                         print(f"Error AI processing item {item_name}: {e}")
 
-            item_total = price * quantity
+            item_total = (price_material + price_work) * quantity
             total_calc_cost += item_total
 
             calc_item = CalculationItem(
@@ -833,7 +845,8 @@ class PriceLogic:
                 mass=item.get("mass", 0.0),
                 quantity=quantity,
                 unit=unit,
-                cost_per_unit=price,
+                cost_per_unit=price_work,
+                cost_material_per_unit=price_material,
                 total_cost=item_total,
                 source=source
             )

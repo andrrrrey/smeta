@@ -126,198 +126,223 @@ async def extract_specification_tables(
 
 def create_calculation_excel(items: List[CalculationItem], total: float,
                              consumable_words: List[str] = None) -> io.BytesIO:
+    """
+    Generate Excel in the КП template format with 11 columns:
+    A: №П/П | B: НАИМЕНОВАНИЕ | C: ТИП,МАРКА | D: ПРОИЗВОДИТЕЛЬ |
+    E: ЕД.ИЗМ | F: КОЛ-ВО | G: ЦЕНА МАТЕРИАЛОВ | H: ЦЕНА РАБОТ |
+    I: СТОИМОСТЬ МАТЕРИАЛОВ | J: СТОИМОСТЬ РАБОТ | K: ОБЩАЯ СТОИМОСТЬ
+    """
     consumables_set = set(w.lower() for w in (consumable_words or []))
-    data = []
-    position_counter = 1
+    LAST_COL = 10  # column K (0-indexed)
 
-    for i, item in enumerate(items):
-        full_name = item.name
-        if item.code and item.code.lower() not in item.name.lower():
-            full_name = f"{item.name} {item.code}"
-
-        qty_display = float(item.quantity)
-        price_display = float(item.cost_per_unit)
-        total_display = float(item.total_cost)
-
-        is_section = (item.source == "section")
-
-        if is_section:
-            pos_display = ""
-        else:
-            pos_display = position_counter
-            position_counter += 1
-
-        data.append({
-            "Позиция": pos_display,
-            "Наименование и техническая характеристика": full_name,
-            "Единица измерения": item.unit,
-            "Количество": qty_display,
-            "Стоимость ед монтажа": price_display,
-            "Сумма монтажа": total_display,
-            "Комментарий": "",
-            "SourceRaw": item.source
-        })
-
-    df = pd.DataFrame(data)
     output = io.BytesIO()
-
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
-        worksheet = workbook.add_worksheet('Смета')
+        worksheet = workbook.add_worksheet('КП')
 
-        header_main_format = workbook.add_format({
-            'bold': True,
-            'align': 'center',
-            'valign': 'vcenter',
-            'bg_color': '#00B0F0',
-            'font_size': 40,
-            'border': 1
-        })
+        # ── Formats ──────────────────────────────────────────────────
+        def fmt(**kw):
+            return workbook.add_format(kw)
 
-        header_sub_format = workbook.add_format({
-            'bold': True,
-            'align': 'center',
-            'valign': 'vcenter',
-            'bg_color': '#BDE6F9',
-            'font_size': 12,
-            'border': 1
-        })
+        title_fmt = fmt(bold=True, align='center', valign='vcenter',
+                        bg_color='#00B0F0', font_size=16, border=1, text_wrap=True)
+        subtitle_fmt = fmt(bold=True, align='center', valign='vcenter',
+                           bg_color='#BDE6F9', font_size=12, border=1, text_wrap=True)
+        obj_label_fmt = fmt(bold=True, align='left', valign='vcenter',
+                            bg_color='#FFFFFF', font_size=11, border=1)
+        # Table column header (blue, bold, centered, wrap)
+        th_fmt = fmt(bold=True, text_wrap=True, align='center', valign='vcenter',
+                     bg_color='#4472C4', font_color='#FFFFFF', border=1, font_size=9)
+        th_sub_fmt = fmt(bold=True, text_wrap=True, align='center', valign='vcenter',
+                         bg_color='#4472C4', font_color='#FFFFFF', border=1, font_size=9)
+        # Section row
+        section_fmt = fmt(bold=True, bg_color='#F4B942', align='left', valign='vcenter',
+                          border=1, text_wrap=True)
+        # Normal data cells
+        cell_fmt = fmt(text_wrap=True, valign='top', border=1, font_size=9)
+        center_fmt = fmt(align='center', valign='top', border=1, font_size=9)
+        num_fmt = fmt(num_format='#,##0.00', valign='top', border=1, font_size=9)
+        # No-price highlight
+        yellow_num_fmt = fmt(bg_color='#FFFF00', num_format='#,##0.00', valign='top',
+                             border=1, font_size=9)
+        red_cell_fmt = fmt(bg_color='#FFC7CE', font_color='#9C0006', text_wrap=True,
+                           valign='top', border=1, font_size=9)
+        # Subtotal row
+        sub_total_label_fmt = fmt(bold=True, bg_color='#C6EFCE', align='right', valign='vcenter',
+                                  border=1, font_size=9)
+        sub_total_val_fmt = fmt(bold=True, bg_color='#C6EFCE', num_format='#,##0.00',
+                                valign='vcenter', border=1, font_size=9)
+        # Grand total row
+        grand_total_label_fmt = fmt(bold=True, bg_color='#D9E1F2', align='right', valign='vcenter',
+                                    border=1, font_size=10)
+        grand_total_val_fmt = fmt(bold=True, bg_color='#D9E1F2', num_format='#,##0.00',
+                                  valign='vcenter', border=1, font_size=10)
+        vat_fmt = fmt(bold=True, bg_color='#E2EFDA', num_format='#,##0.00',
+                      valign='vcenter', border=1, font_size=10)
+        vat_label_fmt = fmt(bold=True, bg_color='#E2EFDA', align='right', valign='vcenter',
+                            border=1, font_size=10)
 
-        table_header_blue_format = workbook.add_format({
-            'bold': True,
-            'text_wrap': True,
-            'align': 'center',
-            'valign': 'vcenter',
-            'bg_color': '#BDE6F9',
-            'border': 1
-        })
+        # ── Column widths ─────────────────────────────────────────────
+        worksheet.set_column(0, 0, 6)   # A: №П/П
+        worksheet.set_column(1, 1, 45)  # B: Наименование
+        worksheet.set_column(2, 2, 20)  # C: Тип, марка
+        worksheet.set_column(3, 3, 14)  # D: Производитель
+        worksheet.set_column(4, 4, 8)   # E: Ед. изм.
+        worksheet.set_column(5, 5, 8)   # F: Кол-во
+        worksheet.set_column(6, 6, 12)  # G: Цена материалов
+        worksheet.set_column(7, 7, 12)  # H: Цена работ
+        worksheet.set_column(8, 8, 14)  # I: Стоимость материалов
+        worksheet.set_column(9, 9, 14)  # J: Стоимость работ
+        worksheet.set_column(10, 10, 16) # K: Общая стоимость
 
-        cell_format = workbook.add_format({
-            'text_wrap': True,
-            'valign': 'top',
-            'border': 1
-        })
+        r = 0  # current row (0-indexed)
 
-        center_format = workbook.add_format({
-            'align': 'center',
-            'valign': 'top',
-            'border': 1
-        })
+        # ── Document header ───────────────────────────────────────────
+        worksheet.merge_range(r, 0, r + 1, LAST_COL,
+                              'КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ\nВентиляция и кондиционирование воздуха',
+                              title_fmt)
+        worksheet.set_row(r, 20)
+        worksheet.set_row(r + 1, 20)
+        r += 2
 
-        currency_format = workbook.add_format({
-            'num_format': '#,##0.00',
-            'valign': 'top',
-            'border': 1
-        })
+        worksheet.merge_range(r, 0, r, 2, 'Наименование объекта:', obj_label_fmt)
+        worksheet.merge_range(r, 3, r, LAST_COL, '', obj_label_fmt)
+        r += 1
 
-        yellow_format = workbook.add_format({
-            'bg_color': '#FFFF00',
-            'num_format': '#,##0.00',
-            'valign': 'top',
-            'border': 1
-        })
+        # ── Table header (2 rows) ─────────────────────────────────────
+        # Row 1 of header
+        worksheet.write(r, 0, '№\nП/П', th_fmt)
+        worksheet.write(r, 1, 'НАИМЕНОВАНИЕ РАБОТ И ЗАТРАТ', th_fmt)
+        worksheet.write(r, 2, 'ТИП, МАРКА, ОБОЗНАЧЕНИЕ', th_fmt)
+        worksheet.write(r, 3, 'ПРОИЗВОДИТЕЛЬ', th_fmt)
+        worksheet.write(r, 4, 'ЕДИНИЦА\nИЗМЕРЕНИЯ', th_fmt)
+        worksheet.write(r, 5, 'КОЛ-ВО', th_fmt)
+        worksheet.merge_range(r, 6, r, 7, 'ЦЕНА ЗА ЕДИНИЦУ', th_fmt)
+        worksheet.merge_range(r, 8, r, 9, 'СТОИМОСТЬ', th_fmt)
+        worksheet.write(r, 10, 'ОБЩАЯ\nСТОИМОСТЬ,\nруб.', th_fmt)
+        worksheet.set_row(r, 36)
+        r += 1
 
-        red_format = workbook.add_format({
-            'bg_color': '#FFC7CE',
-            'font_color': '#9C0006',
-            'text_wrap': True,
-            'valign': 'top',
-            'border': 1
-        })
+        # Row 2 of header (sub-headers for merged price/cost columns)
+        worksheet.write(r, 0, '', th_sub_fmt)
+        worksheet.write(r, 1, '', th_sub_fmt)
+        worksheet.write(r, 2, '', th_sub_fmt)
+        worksheet.write(r, 3, '', th_sub_fmt)
+        worksheet.write(r, 4, '', th_sub_fmt)
+        worksheet.write(r, 5, '', th_sub_fmt)
+        worksheet.write(r, 6, 'МАТЕРИАЛОВ', th_sub_fmt)
+        worksheet.write(r, 7, 'РАБОТ', th_sub_fmt)
+        worksheet.write(r, 8, 'МАТЕРИАЛОВ', th_sub_fmt)
+        worksheet.write(r, 9, 'РАБОТ', th_sub_fmt)
+        worksheet.write(r, 10, '', th_sub_fmt)
+        worksheet.set_row(r, 18)
+        r += 1
 
-        section_format = workbook.add_format({
-            'bg_color': '#D9D9D9',
-            'bold': True,
-            'valign': 'center',
-            'border': 1
-        })
+        data_start_row = r  # first data row (0-indexed) for final SUM range
 
-        current_row = 0
+        # ── Data rows ─────────────────────────────────────────────────
+        # Group items into sections
+        sections = []  # list of (section_name, [items])
+        current_section_name = "Раздел 1"
+        current_section_items = []
 
-        worksheet.merge_range(current_row, 0, current_row + 4, 6, 'ООО "СИБ"', header_main_format)
-        current_row += 5
+        for item in items:
+            if item.source == "section":
+                if current_section_items:
+                    sections.append((current_section_name, current_section_items))
+                current_section_name = item.name
+                current_section_items = []
+            else:
+                current_section_items.append(item)
 
-        worksheet.merge_range(current_row, 0, current_row + 1, 6, 'КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ', header_sub_format)
-        current_row += 2
+        if current_section_items or not sections:
+            sections.append((current_section_name, current_section_items))
 
-        worksheet.merge_range(current_row, 0, current_row + 2, 6, 'Контрагент', header_sub_format)
-        current_row += 3
+        position_counter = 1
+        section_total_rows = []  # track rows that have sub-totals for grand total formula
 
-        columns = [
-            "Позиция",
-            "Наименование и техническая характеристика",
-            "Единица измерения",
-            "Количество",
-            "Стоимость ед монтажа",
-            "Сумма монтажа",
-            "Комментарий"
-        ]
+        for sec_idx, (sec_name, sec_items) in enumerate(sections):
+            # Section header row
+            worksheet.merge_range(r, 0, r, LAST_COL, sec_name, section_fmt)
+            worksheet.set_row(r, 16)
+            r += 1
+            sec_data_start = r  # first item row of this section
 
-        for col_num, value in enumerate(columns):
-            worksheet.write(current_row, col_num, value, table_header_blue_format)
+            for item in sec_items:
+                qty = float(item.quantity)
+                price_mat = float(item.cost_material_per_unit)
+                price_work = float(item.cost_per_unit)
 
-        current_row += 1
+                name_lower = item.name.lower()
+                is_consumable = any(w in name_lower for w in consumables_set)
+                no_price = (price_mat == 0 and price_work == 0)
 
-        worksheet.merge_range(current_row, 0, current_row + 1, 6, '', header_sub_format)
-        current_row += 2
+                if is_consumable:
+                    row_name_fmt = red_cell_fmt
+                    row_num_fmt = red_cell_fmt
+                elif no_price:
+                    row_name_fmt = cell_fmt
+                    row_num_fmt = yellow_num_fmt
+                else:
+                    row_name_fmt = cell_fmt
+                    row_num_fmt = num_fmt
 
-        worksheet.merge_range(current_row, 0, current_row + 1, 6, '', header_sub_format)
-        current_row += 2
+                worksheet.write(r, 0, position_counter, center_fmt)
+                worksheet.write(r, 1, item.name, row_name_fmt)
+                worksheet.write(r, 2, item.code or '', cell_fmt)
+                worksheet.write(r, 3, '', cell_fmt)  # Производитель (blank)
+                worksheet.write(r, 4, item.unit, center_fmt)
+                worksheet.write(r, 5, qty, center_fmt)
+                worksheet.write(r, 6, price_mat, row_num_fmt)
+                worksheet.write(r, 7, price_work, row_num_fmt)
+                # Formulas: col I = F*G, col J = F*H, col K = I+J
+                xl_row = r + 1  # 1-indexed for Excel formulas
+                worksheet.write_formula(r, 8, f'=F{xl_row}*G{xl_row}', row_num_fmt)
+                worksheet.write_formula(r, 9, f'=F{xl_row}*H{xl_row}', row_num_fmt)
+                worksheet.write_formula(r, 10, f'=I{xl_row}+J{xl_row}', row_num_fmt)
+                worksheet.set_row(r, 30)
+                r += 1
+                position_counter += 1
 
-        start_data_row = current_row
+            sec_data_end = r - 1  # last item row of this section
 
-        for i, row in enumerate(data):
-            row_num = start_data_row + i
+            # Section subtotal row
+            if sec_items:
+                i_range = f'I{sec_data_start + 1}:I{sec_data_end + 1}'
+                j_range = f'J{sec_data_start + 1}:J{sec_data_end + 1}'
+                k_range = f'K{sec_data_start + 1}:K{sec_data_end + 1}'
+                worksheet.merge_range(r, 0, r, 7,
+                                      f'ИТОГО по разделу {sec_name}:', sub_total_label_fmt)
+                worksheet.write_formula(r, 8, f'=SUM({i_range})', sub_total_val_fmt)
+                worksheet.write_formula(r, 9, f'=SUM({j_range})', sub_total_val_fmt)
+                worksheet.write_formula(r, 10, f'=SUM({k_range})', sub_total_val_fmt)
+                section_total_rows.append(r)
+                worksheet.set_row(r, 16)
+                r += 1
 
-            price_style = currency_format
-            name_style = cell_format
+        # ── ИТОГО ПО ВСЕМ РАЗДЕЛАМ ───────────────────────────────────
+        worksheet.merge_range(r, 0, r, 7, 'ИТОГО ПО ВСЕМ РАЗДЕЛАМ:', grand_total_label_fmt)
+        if section_total_rows:
+            i_refs = '+'.join(f'I{sr + 1}' for sr in section_total_rows)
+            j_refs = '+'.join(f'J{sr + 1}' for sr in section_total_rows)
+            k_refs = '+'.join(f'K{sr + 1}' for sr in section_total_rows)
+        else:
+            i_refs = f'SUM(I{data_start_row + 1}:I{r})'
+            j_refs = f'SUM(J{data_start_row + 1}:J{r})'
+            k_refs = f'SUM(K{data_start_row + 1}:K{r})'
+        worksheet.write_formula(r, 8, f'={i_refs}', grand_total_val_fmt)
+        worksheet.write_formula(r, 9, f'={j_refs}', grand_total_val_fmt)
+        worksheet.write_formula(r, 10, f'={k_refs}', grand_total_val_fmt)
+        grand_total_row = r
+        worksheet.set_row(r, 18)
+        r += 1
 
-            source_raw = row.get("SourceRaw", "")
-
-            name_lower = str(row["Наименование и техническая характеристика"]).lower()
-            is_consumable = any(w in name_lower for w in consumables_set)
-
-            if source_raw == "section":
-                worksheet.write(row_num, 0, row["Позиция"], section_format)
-                worksheet.write(row_num, 1, row["Наименование и техническая характеристика"], section_format)
-                worksheet.write(row_num, 2, "", section_format)
-                worksheet.write(row_num, 3, "", section_format)
-                worksheet.write(row_num, 4, "", section_format)
-                worksheet.write(row_num, 5, "", section_format)
-                worksheet.write(row_num, 6, "", section_format)
-                continue
-
-            elif is_consumable:
-                name_style = red_format
-            elif row["Стоимость ед монтажа"] == 0:
-                price_style = yellow_format
-
-            worksheet.write(row_num, 0, row["Позиция"], center_format)
-            worksheet.write(row_num, 1, row["Наименование и техническая характеристика"], name_style)
-            worksheet.write(row_num, 2, row["Единица измерения"], center_format)
-            worksheet.write(row_num, 3, row["Количество"], center_format)
-            worksheet.write(row_num, 4, row["Стоимость ед монтажа"], price_style)
-
-            formula = f'=D{row_num + 1}*E{row_num + 1}'
-            worksheet.write_formula(row_num, 5, formula, currency_format)
-
-            worksheet.write(row_num, 6, row["Комментарий"], cell_format)
-
-        total_row = start_data_row + len(data)
-        total_fmt = workbook.add_format({'bold': True, 'bg_color': '#D9E1F2', 'border': 1, 'align': 'right'})
-        total_val_fmt = workbook.add_format(
-            {'bold': True, 'bg_color': '#D9E1F2', 'border': 1, 'num_format': '#,##0.00'})
-
-        worksheet.merge_range(total_row, 0, total_row, 4, 'Итого:', total_fmt)
-        worksheet.write_formula(total_row, 5, f'=SUM(F{start_data_row + 1}:F{total_row})', total_val_fmt)
-        worksheet.write(total_row, 6, '', total_fmt)
-
-        worksheet.set_column('A:A', 8)
-        worksheet.set_column('B:B', 60)
-        worksheet.set_column('C:C', 12)
-        worksheet.set_column('D:D', 12)
-        worksheet.set_column('E:F', 18)
-        worksheet.set_column('G:G', 25)
+        # ── в т.ч. НДС 20% ───────────────────────────────────────────
+        worksheet.merge_range(r, 0, r, 7, 'в т.ч. НДС 20%:', vat_label_fmt)
+        worksheet.write_formula(r, 8, f'=I{grand_total_row + 1}*0.2', vat_fmt)
+        worksheet.write_formula(r, 9, f'=J{grand_total_row + 1}*0.2', vat_fmt)
+        worksheet.write_formula(r, 10, f'=K{grand_total_row + 1}*0.2', vat_fmt)
+        worksheet.set_row(r, 18)
 
     output.seek(0)
     return output
@@ -349,19 +374,25 @@ def parse_excel_for_update(file_path: str) -> List[Dict]:
     col_pos = None
     col_name = None
     col_qty = None
-    col_price = None
+    col_price_work = None
+    col_price_mat = None
     col_unit = None
 
     for c in df.columns:
-        if "наименование" in c:
+        c_lower = c.lower()
+        if "наименование" in c_lower:
             col_name = c
-        elif "количество" in c or "кол-во" in c:
+        elif "количество" in c_lower or "кол-во" in c_lower or "кол-во" in c_lower:
             col_qty = c
-        elif "стоимость ед" in c or "цена" in c:
-            col_price = c
-        elif "единица" in c or "ед. изм" in c:
+        elif "материал" in c_lower and ("цена" in c_lower or "стоимост" in c_lower):
+            col_price_mat = c
+        elif "работ" in c_lower and ("цена" in c_lower or "стоимост" in c_lower):
+            col_price_work = c
+        elif "стоимость ед" in c_lower or ("цена" in c_lower and col_price_work is None and col_price_mat is None):
+            col_price_work = c  # fallback: single price col → treat as work
+        elif "единица" in c_lower or "ед. изм" in c_lower:
             col_unit = c
-        elif "позиция" in c or "№" in c or "no" in c:
+        elif "позиция" in c_lower or "№" in c_lower or "no" in c_lower:
             col_pos = c
 
     if not col_name or not col_qty:
@@ -385,8 +416,11 @@ def parse_excel_for_update(file_path: str) -> List[Dict]:
 
             quantity = safe_float(row[col_qty])
             cost_per_unit = 0.0
-            if col_price:
-                cost_per_unit = safe_float(row[col_price])
+            cost_material_per_unit = 0.0
+            if col_price_work:
+                cost_per_unit = safe_float(row[col_price_work])
+            if col_price_mat:
+                cost_material_per_unit = safe_float(row[col_price_mat])
 
             unit = "-"
             if col_unit and not pd.isna(row[col_unit]):
@@ -406,6 +440,7 @@ def parse_excel_for_update(file_path: str) -> List[Dict]:
                 "name": name,
                 "quantity": quantity,
                 "cost_per_unit": cost_per_unit,
+                "cost_material_per_unit": cost_material_per_unit,
                 "unit": unit
             })
 
@@ -420,8 +455,9 @@ def create_pricelist_excel(items: List[PriceListItem]) -> io.BytesIO:
     for i, item in enumerate(items):
         data.append({
             "№": i + 1,
-            "Наименование": item.name,
-            "Цена": item.price,
+            "Наименование работ и затрат": item.name,
+            "Цена за единицу МАТЕРИАЛОВ": float(item.price_material or 0),
+            "Цена за единицу РАБОТ": float(item.price or 0),
         })
 
     df = pd.DataFrame(data)
@@ -433,8 +469,10 @@ def create_pricelist_excel(items: List[PriceListItem]) -> io.BytesIO:
         workbook = writer.book
         worksheet = writer.sheets['Прайс-лист']
 
+        worksheet.set_column('A:A', 5)
         worksheet.set_column('B:B', 60)
-        worksheet.set_column('C:C', 15)
+        worksheet.set_column('C:C', 22)
+        worksheet.set_column('D:D', 22)
 
     output.seek(0)
     return output

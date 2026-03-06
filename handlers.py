@@ -896,11 +896,13 @@ async def process_edit_command(message: Message, state: FSMContext, bot: Bot):
             multiplier = new_total_target / current_total_safe
 
             for item in calc.items:
-                c = to_dec(item.cost_per_unit)
+                c_work = to_dec(item.cost_per_unit)
+                c_mat = to_dec(item.cost_material_per_unit)
                 q = to_dec(item.quantity)
 
-                item.cost_per_unit = c * multiplier
-                item.total_cost = item.cost_per_unit * q
+                item.cost_per_unit = c_work * multiplier
+                item.cost_material_per_unit = c_mat * multiplier
+                item.total_cost = (item.cost_per_unit + item.cost_material_per_unit) * q
 
                 new_total_accum += item.total_cost
 
@@ -922,17 +924,18 @@ async def process_edit_command(message: Message, state: FSMContext, bot: Bot):
                 elif item_name and item_name in str(item.name).lower():
                     match = True
 
-                c = to_dec(item.cost_per_unit)
+                c_work = to_dec(item.cost_per_unit)
+                c_mat = to_dec(item.cost_material_per_unit)
 
                 if match:
                     item.quantity = new_quantity
-                    item.total_cost = new_quantity * c
+                    item.total_cost = new_quantity * (c_work + c_mat)
                     item.source = "manual"
                     item_found = True
                     new_total_accum += item.total_cost
                 else:
                     q = to_dec(item.quantity)
-                    new_total_accum += (q * c)
+                    new_total_accum += q * (c_work + c_mat)
 
             if not item_found:
                 await send_temp_notification(message, f"Не нашел позицию: {item_name or f'строка {item_row}'}")
@@ -957,16 +960,18 @@ async def process_edit_command(message: Message, state: FSMContext, bot: Bot):
                     match = True
 
                 q = to_dec(item.quantity)
+                c_mat = to_dec(item.cost_material_per_unit)
 
                 if match:
+                    # set_cost sets the work cost; material cost unchanged
                     item.cost_per_unit = new_cost
-                    item.total_cost = q * new_cost
+                    item.total_cost = q * (new_cost + c_mat)
                     item.source = "manual"
                     item_found = True
                     new_total_accum += item.total_cost
                 else:
-                    c = to_dec(item.cost_per_unit)
-                    new_total_accum += (q * c)
+                    c_work = to_dec(item.cost_per_unit)
+                    new_total_accum += q * (c_work + c_mat)
 
             if not item_found:
                 await send_temp_notification(message, f"Не нашел позицию: {item_name or f'строка {item_row}'}")
@@ -989,14 +994,16 @@ async def process_edit_command(message: Message, state: FSMContext, bot: Bot):
                 elif cmd_type in ["percent_except_increase", "percent_except_decrease"] and i not in except_rows:
                     apply_change = True
 
-                c = to_dec(item.cost_per_unit)
+                c_work = to_dec(item.cost_per_unit)
+                c_mat = to_dec(item.cost_material_per_unit)
                 q = to_dec(item.quantity)
 
                 if apply_change:
-                    item.cost_per_unit = c * multiplier
-                    item.total_cost = item.cost_per_unit * q
+                    item.cost_per_unit = c_work * multiplier
+                    item.cost_material_per_unit = c_mat * multiplier
+                    item.total_cost = (item.cost_per_unit + item.cost_material_per_unit) * q
                 else:
-                    item.total_cost = c * q
+                    item.total_cost = (c_work + c_mat) * q
 
                 new_total_accum += item.total_cost
 
@@ -1024,7 +1031,7 @@ async def approve_calculation(callback: CallbackQuery, state: FSMContext, bot: B
 
         items_learned = 0
         for item in calc.items:
-            if item.source in ["manual", "internet"] and item.cost_per_unit > 0:
+            if item.source in ["manual", "internet"] and (item.cost_per_unit > 0 or item.cost_material_per_unit > 0):
                 full_name = item.name
                 if item.code and item.code.lower() not in item.name.lower() and "зип" not in item.name.lower():
                     full_name = f"{item.name} {item.code}"
@@ -1035,8 +1042,13 @@ async def approve_calculation(callback: CallbackQuery, state: FSMContext, bot: B
 
                 if existing_price_item:
                     existing_price_item.price = item.cost_per_unit
+                    existing_price_item.price_material = item.cost_material_per_unit
                 else:
-                    session.add(PriceListItem(name=full_name, price=item.cost_per_unit))
+                    session.add(PriceListItem(
+                        name=full_name,
+                        price=item.cost_per_unit,
+                        price_material=item.cost_material_per_unit
+                    ))
                 items_learned += 1
 
         calc.status = "approved"
@@ -1130,7 +1142,8 @@ async def process_excel_update(message: Message, state: FSMContext, bot: Bot):
                 try:
                     new_full_name = str(update_data.get('name')).strip()
                     new_qty = to_decimal(update_data.get('quantity'))
-                    new_price = to_decimal(update_data.get('cost_per_unit'))
+                    new_price_work = to_decimal(update_data.get('cost_per_unit'))
+                    new_price_mat = to_decimal(update_data.get('cost_material_per_unit', 0))
                     new_unit = update_data.get('unit')
 
                     if item.code and item.code.lower() not in new_full_name.lower():
@@ -1138,12 +1151,13 @@ async def process_excel_update(message: Message, state: FSMContext, bot: Bot):
 
                     item.name = new_full_name
                     item.quantity = new_qty
-                    item.cost_per_unit = new_price
+                    item.cost_per_unit = new_price_work
+                    item.cost_material_per_unit = new_price_mat
                     if new_unit and new_unit != '-' and new_unit != item.unit:
                         item.unit = new_unit
 
                     item.source = "manual"
-                    item.total_cost = item.quantity * item.cost_per_unit
+                    item.total_cost = item.quantity * (item.cost_per_unit + item.cost_material_per_unit)
                     updated_count += 1
                 except Exception as e:
                     print(f"Error updating item {i}: {e}")
@@ -1319,41 +1333,93 @@ async def process_price_list(message: Message, state: FSMContext, bot: Bot):
             return
 
         header_row_index = -1
-        name_col_name = None
-        price_col_name = None
         name_col_idx = -1
-        price_col_idx = -1
+        price_material_col_idx = -1
+        price_work_col_idx = -1
 
-        for i, row in df_first_sheet.head(10).iterrows():
+        for i, row in df_first_sheet.head(20).iterrows():
             row_values = [str(cell).lower() for cell in row.tolist()]
             has_name = any('наимен' in cell or 'вид работ' in cell for cell in row_values)
-            has_price = any(('цена' in cell or 'стоимост' in cell) and 'материал' not in cell for cell in row_values)
+            has_material = any('материал' in cell for cell in row_values)
+            has_work = any('работ' in cell for cell in row_values)
+            # Also accept single price column for backward compat
+            has_price_single = any(
+                ('цена' in cell or 'стоимост' in cell) and 'материал' not in cell and 'работ' not in cell
+                for cell in row_values
+            )
 
-            if has_name and has_price:
+            if has_name and (has_material or has_work or has_price_single):
                 header_row_index = i
                 temp_header = df_first_sheet.iloc[header_row_index].tolist()
                 try:
-                    name_col_name = next(
-                        str(h) for h in temp_header if 'наимен' in str(h).lower() or 'вид работ' in str(h).lower())
-                    price_col_name = next(
-                        str(h) for h in temp_header
-                        if ('цена' in str(h).lower() or 'стоимост' in str(h).lower())
-                        and 'материал' not in str(h).lower()
+                    name_col_idx = next(
+                        j for j, h in enumerate(temp_header)
+                        if 'наимен' in str(h).lower() or 'вид работ' in str(h).lower()
                     )
-
-                    name_col_idx = temp_header.index(name_col_name)
-                    price_col_idx = temp_header.index(price_col_name)
-
-                except (StopIteration, ValueError):
+                except StopIteration:
                     header_row_index = -1
                     continue
-                break
+
+                # Find material price column
+                for j, h in enumerate(temp_header):
+                    h_str = str(h).lower()
+                    if 'материал' in h_str and ('цена' in h_str or 'стоимост' in h_str or j > name_col_idx):
+                        price_material_col_idx = j
+                        break
+                if price_material_col_idx == -1:
+                    # Check next row for sub-header "МАТЕРИАЛОВ"
+                    if i + 1 < len(df_first_sheet):
+                        next_row = df_first_sheet.iloc[i + 1].tolist()
+                        for j, h in enumerate(next_row):
+                            if 'материал' in str(h).lower() and j > name_col_idx:
+                                price_material_col_idx = j
+                                break
+
+                # Find work price column
+                for j, h in enumerate(temp_header):
+                    h_str = str(h).lower()
+                    if 'работ' in h_str and ('цена' in h_str or 'стоимост' in h_str or j > name_col_idx):
+                        price_work_col_idx = j
+                        break
+                if price_work_col_idx == -1:
+                    # Check next row for sub-header "РАБОТ"
+                    if i + 1 < len(df_first_sheet):
+                        next_row = df_first_sheet.iloc[i + 1].tolist()
+                        for j, h in enumerate(next_row):
+                            if 'работ' in str(h).lower() and j > name_col_idx:
+                                price_work_col_idx = j
+                                break
+
+                # Fallback: single price column (backward compat)
+                if price_work_col_idx == -1 and price_material_col_idx == -1:
+                    for j, h in enumerate(temp_header):
+                        h_str = str(h).lower()
+                        if ('цена' in h_str or 'стоимост' in h_str) and j > name_col_idx:
+                            price_work_col_idx = j
+                            break
+
+                if name_col_idx >= 0 and (price_material_col_idx >= 0 or price_work_col_idx >= 0):
+                    break
+                else:
+                    header_row_index = -1
 
         if header_row_index == -1:
-            msg = "Ошибка: Не найдены заголовки 'Наименование'/'Вид работ' и 'Цена'/'Стоимость' (без 'материалов') на первом листе."
+            msg = (
+                "Ошибка: Не найдены заголовки прайс-листа.\n"
+                "Ожидаемые колонки: 'Наименование'/'Вид работ' + 'Материалов' + 'Работ'.\n"
+                "Или: 'Наименование' + 'Цена'/'Стоимость'."
+            )
             asyncio.create_task(send_temp_notification(message, msg, delay=10))
             await show_admin_menu(message, state, bot)
             return
+
+        def _parse_price(val) -> float:
+            if pd.isna(val):
+                return 0.0
+            try:
+                return float(str(val).replace(" ", "").replace("\xa0", "").replace(",", "."))
+            except (ValueError, TypeError):
+                return 0.0
 
         for sheet_name, df_no_header in excel_sheets.items():
             start_row = 0
@@ -1361,24 +1427,27 @@ async def process_price_list(message: Message, state: FSMContext, bot: Bot):
                 start_row = header_row_index + 1
 
             for i, row in df_no_header.iloc[start_row:].iterrows():
-                if len(row) <= max(name_col_idx, price_col_idx):
+                max_needed_idx = max(
+                    name_col_idx,
+                    price_material_col_idx if price_material_col_idx >= 0 else 0,
+                    price_work_col_idx if price_work_col_idx >= 0 else 0
+                )
+                if len(row) <= max_needed_idx:
                     continue
 
                 name_val = row.get(name_col_idx)
-                price_val = row.get(price_col_idx)
-
-                if pd.isna(name_val) or pd.isna(price_val):
+                if pd.isna(name_val):
                     continue
 
                 name = str(name_val).strip()
-                try:
-                    price_str = str(price_val).replace(" ", "").replace(",", ".")
-                    price = float(price_str)
-                except (ValueError, TypeError):
+                if not name or name.lower() in ['nan', 'none']:
                     continue
 
-                if name and price > 0:
-                    items_to_upsert[name] = price
+                price_material = _parse_price(row.get(price_material_col_idx) if price_material_col_idx >= 0 else None)
+                price_work = _parse_price(row.get(price_work_col_idx) if price_work_col_idx >= 0 else None)
+
+                if name and (price_material > 0 or price_work > 0):
+                    items_to_upsert[name] = {"price": price_work, "price_material": price_material}
 
             processed_sheets += 1
 
@@ -1388,7 +1457,10 @@ async def process_price_list(message: Message, state: FSMContext, bot: Bot):
             await show_admin_menu(message, state, bot)
             return
 
-        mappings = [{"name": name, "price": price} for name, price in items_to_upsert.items()]
+        mappings = [
+            {"name": name, "price": vals["price"], "price_material": vals["price_material"]}
+            for name, vals in items_to_upsert.items()
+        ]
 
         async with async_session_factory() as session:
             dialect = session.bind.dialect.name
@@ -1398,13 +1470,13 @@ async def process_price_list(message: Message, state: FSMContext, bot: Bot):
                 stmt = sqlite_insert(PriceListItem).values(mappings)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=['name'],
-                    set_={'price': stmt.excluded.price}
+                    set_={'price': stmt.excluded.price, 'price_material': stmt.excluded.price_material}
                 )
             elif dialect == "postgresql":
                 stmt = postgresql_insert(PriceListItem).values(mappings)
                 stmt = stmt.on_conflict_do_update(
                     constraint='price_list_item_name_key',
-                    set_={'price': stmt.excluded.price}
+                    set_={'price': stmt.excluded.price, 'price_material': stmt.excluded.price_material}
                 )
             else:
                 asyncio.create_task(send_temp_notification(message, f"Ошибка: Upsert не настроен для {dialect}"))
