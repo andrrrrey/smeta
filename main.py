@@ -1,0 +1,54 @@
+import asyncio
+import logging
+from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
+
+from config import load_config
+from db import init_db, async_session_factory, BotSettings
+from services import ai_service_instance, price_logic_instance
+from handlers import router as main_router
+from aiogram.types import BotCommand
+
+async def on_startup(bot: Bot):
+    await init_db()
+
+    async with async_session_factory() as session:
+        settings = await session.get(BotSettings, 1)
+        if settings:
+            await ai_service_instance.update_settings(settings)
+
+        await price_logic_instance.load_stopwords(session)
+        await price_logic_instance.load_section_titles(session)
+        await price_logic_instance.load_pricelist_cache(session)
+
+    commands = [
+        BotCommand(command="start", description="Перезапустить бота / Главное меню"),
+        BotCommand(command="help", description="Показать инструкцию"),
+        BotCommand(command="admin", description="Админ-панель (для владельца)")
+    ]
+    await bot.set_my_commands(commands)
+
+    await bot.delete_webhook(drop_pending_updates=True)
+
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+
+    config = load_config()
+
+    storage = MemoryStorage()
+    bot = Bot(token=config.bot.token)
+    dp = Dispatcher(storage=storage)
+
+    dp.include_router(main_router)
+
+    dp.startup.register(on_startup)
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
