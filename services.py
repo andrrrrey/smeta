@@ -472,7 +472,7 @@ class AIService:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.0,
-                max_tokens=4000
+                max_completion_tokens=4000
             )
             content = response.choices[0].message.content
             data = json.loads(content)
@@ -577,7 +577,7 @@ class AIService:
             ],
             response_format={"type": "json_object"},
             temperature=0.0,
-            max_tokens=4000,
+            max_completion_tokens=4000,
         )
 
         content = resp.choices[0].message.content
