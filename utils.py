@@ -162,9 +162,12 @@ def create_calculation_excel(items: List[CalculationItem], total: float,
         cell_fmt = fmt(text_wrap=True, valign='top', border=1, font_size=9)
         center_fmt = fmt(align='center', valign='top', border=1, font_size=9)
         num_fmt = fmt(num_format='#,##0.00', valign='top', border=1, font_size=9)
-        # No-price highlight
+        # No-price / internet-found highlight (yellow)
         yellow_num_fmt = fmt(bg_color='#FFFF00', num_format='#,##0.00', valign='top',
                              border=1, font_size=9)
+        # Price-list-found highlight (light green)
+        green_num_fmt = fmt(bg_color='#CCFFCC', num_format='#,##0.00', valign='top',
+                            border=1, font_size=9)
         red_cell_fmt = fmt(bg_color='#FFC7CE', font_color='#9C0006', text_wrap=True,
                            valign='top', border=1, font_size=9)
         # Subtotal row
@@ -280,12 +283,20 @@ def create_calculation_excel(items: List[CalculationItem], total: float,
                 if is_consumable:
                     row_name_fmt = red_cell_fmt
                     row_num_fmt = red_cell_fmt
-                elif no_price:
-                    row_name_fmt = cell_fmt
-                    row_num_fmt = yellow_num_fmt
                 else:
                     row_name_fmt = cell_fmt
-                    row_num_fmt = num_fmt
+                    src = item.source or ''
+                    if src == 'internet':
+                        # Price found via internet search → yellow
+                        row_num_fmt = yellow_num_fmt
+                    elif src in ('internal', 'rag'):
+                        # Price found in price list (DB or uploaded docs) → light green
+                        row_num_fmt = green_num_fmt
+                    elif no_price:
+                        # No price found at all → yellow to draw attention
+                        row_num_fmt = yellow_num_fmt
+                    else:
+                        row_num_fmt = num_fmt
 
                 worksheet.write(r, 0, position_counter, center_fmt)
                 worksheet.write(r, 1, item.name, row_name_fmt)
