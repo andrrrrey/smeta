@@ -575,7 +575,14 @@ class AIService:
                 await asyncio.sleep(1)
                 return await self.parse_specification_from_image(base64_image, user_hint, retry_attempt=1)
             return []
-        except Exception:
+        except json.JSONDecodeError as e:
+            print(f"Vision JSON parse error: {e} | raw content: {content!r:.300}")
+            if retry_attempt == 0:
+                await asyncio.sleep(1)
+                return await self.parse_specification_from_image(base64_image, user_hint, retry_attempt=1)
+            return []
+        except Exception as e:
+            print(f"Vision unexpected error: {e}")
             if retry_attempt == 0:
                 await asyncio.sleep(1)
                 return await self.parse_specification_from_image(base64_image, user_hint, retry_attempt=1)
@@ -616,30 +623,51 @@ class AIService:
                     return m.group(1).strip()
             return content
 
-        # ── Метод 1: локальное извлечение текста через pdfplumber ──────────
+        # ── Метод 1: pdfplumber — структурированные таблицы ───────────────
         try:
-            pdf_text = ""
+            content_parts: List[str] = []
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                for page in pdf.pages:
-                    t = page.extract_text()
-                    if t:
-                        pdf_text += t + "\n"
+                for page_num, page in enumerate(pdf.pages, 1):
+                    # Сначала пробуем extract_tables — сохраняет строки/колонки
+                    tables = page.extract_tables()
+                    for tbl in tables:
+                        if not tbl:
+                            continue
+                        rows_str = []
+                        for row in tbl:
+                            rows_str.append(" | ".join(
+                                (c.replace("\n", " ").strip() if c else "") for c in row
+                            ))
+                        table_md = "\n".join(rows_str)
+                        if table_md.strip():
+                            content_parts.append(f"[Таблица стр.{page_num}]\n{table_md}")
 
-            if pdf_text.strip() and len(pdf_text.strip()) > 50:
-                text_prompt = f"{base_prompt}\nТекст из PDF:\n{pdf_text[:15000]}"
-                messages = [{"role": "user", "content": text_prompt}]
+                    # Если таблиц нет — берём сырой текст страницы
+                    if not tables:
+                        raw = page.extract_text()
+                        if raw and raw.strip():
+                            content_parts.append(f"[Текст стр.{page_num}]\n{raw.strip()}")
+
+            if content_parts:
+                combined = "\n\n".join(content_parts)[:16000]
+                prompt_text = (
+                    f"{base_prompt}\n\n"
+                    "Данные из PDF (таблицы отформатированы через |):\n\n"
+                    f"{combined}"
+                )
+                messages = [{"role": "user", "content": prompt_text}]
                 resp = await client.chat.completions.create(**_build_kwargs(messages))
                 content = resp.choices[0].message.content or ""
                 if content:
                     result = self._parse_items_from_json(_extract_content(content))
                     if result:
-                        print(f"PDF parse: text extraction OK, {len(result)} items")
+                        print(f"PDF parse: pdfplumber tables OK — {len(result)} items")
                         return result
-                    print("PDF parse: text extraction returned empty items, falling back")
+                    print("PDF parse: pdfplumber вернул 0 позиций, переходим к Files API")
                 else:
-                    print(f"PDF parse via text: empty response, finish_reason={resp.choices[0].finish_reason}")
+                    print(f"PDF parse pdfplumber: пустой ответ, finish_reason={resp.choices[0].finish_reason}")
         except Exception as e:
-            print(f"PDF text extraction error: {e}")
+            print(f"PDF pdfplumber error: {e}")
 
         # ── Метод 2: OpenAI Files API (для моделей, поддерживающих файлы) ──
         try:
