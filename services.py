@@ -3,6 +3,7 @@ import chromadb
 import asyncio
 import re
 import io
+import pdfplumber
 import google.generativeai as genai
 from google.api_core.exceptions import GoogleAPIError
 from chromadb.utils import embedding_functions
@@ -435,6 +436,46 @@ class AIService:
             print(f"Failed to transcribe audio: {e}")
             return None
 
+    def _parse_items_from_json(self, content: str) -> List[Dict]:
+        """Parse JSON string into list of specification items."""
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict):
+                items = data.get("items", [])
+                if not isinstance(items, list):
+                    # try other common keys
+                    for key in ("specification", "data", "result"):
+                        if key in data and isinstance(data[key], list):
+                            items = data[key]
+                            break
+            elif isinstance(data, list):
+                items = data
+            else:
+                return []
+
+            out: List[Dict] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "")).strip()
+                code = str(item.get("code", "")).strip()
+                unit = str(item.get("unit", "")).strip()
+                qty_raw = item.get("quantity", 0)
+                try:
+                    quantity = float(qty_raw)
+                except Exception:
+                    quantity = 0.0
+                display_name = name or code
+                if not display_name:
+                    continue
+                if not re.search(r"[a-zA-Zа-яА-Я]", display_name):
+                    continue
+                out.append({"name": display_name, "quantity": quantity, "unit": unit, "code": code, "mass": 0.0})
+            return out
+        except Exception as e:
+            print(f"JSON parse error: {e}")
+            return []
+
     async def parse_specification_from_image(self, base64_image: str, user_hint: str = "", retry_attempt: int = 0) -> \
     List[Dict]:
         client = self.openai_client
@@ -546,7 +587,7 @@ class AIService:
         if not client:
             return []
 
-        prompt = (
+        base_prompt = (
             "Извлеки из PDF спецификацию (позиции/разделы).\n"
             "Верни только JSON-объект вида {\"items\": [...]}\n"
             "items: массив объектов {\"name\": string, \"quantity\": number, \"unit\": string, \"code\": string}.\n"
@@ -556,74 +597,77 @@ class AIService:
             "3) Никаких лишних полей, только эти.\n"
         )
         if user_hint:
-            prompt += f"\nПодсказка пользователя: {user_hint}\n"
-
-        f = await client.files.create(
-            file=(filename, io.BytesIO(pdf_bytes), "application/pdf"),
-            purpose="user_data"
-        )
+            base_prompt += f"\nПодсказка пользователя: {user_hint}\n"
 
         model_name_only = self.model.split('@')[0]
-        is_o_series = re.match(r'^o\d', model_name_only)
-        create_kwargs = dict(
-            model=model_name_only,
-            messages=[
+        is_o_series = bool(re.match(r'^o\d', model_name_only))
+
+        def _build_kwargs(messages):
+            kwargs = dict(model=model_name_only, messages=messages, max_completion_tokens=4000)
+            if not is_o_series:
+                kwargs["response_format"] = {"type": "json_object"}
+                kwargs["temperature"] = 0.0
+            return kwargs
+
+        def _extract_content(content: str) -> str:
+            if is_o_series and "```" in content:
+                m = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
+                if m:
+                    return m.group(1).strip()
+            return content
+
+        # ── Метод 1: локальное извлечение текста через pdfplumber ──────────
+        try:
+            pdf_text = ""
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                for page in pdf.pages:
+                    t = page.extract_text()
+                    if t:
+                        pdf_text += t + "\n"
+
+            if pdf_text.strip() and len(pdf_text.strip()) > 50:
+                text_prompt = f"{base_prompt}\nТекст из PDF:\n{pdf_text[:15000]}"
+                messages = [{"role": "user", "content": text_prompt}]
+                resp = await client.chat.completions.create(**_build_kwargs(messages))
+                content = resp.choices[0].message.content or ""
+                if content:
+                    result = self._parse_items_from_json(_extract_content(content))
+                    if result:
+                        print(f"PDF parse: text extraction OK, {len(result)} items")
+                        return result
+                    print("PDF parse: text extraction returned empty items, falling back")
+                else:
+                    print(f"PDF parse via text: empty response, finish_reason={resp.choices[0].finish_reason}")
+        except Exception as e:
+            print(f"PDF text extraction error: {e}")
+
+        # ── Метод 2: OpenAI Files API (для моделей, поддерживающих файлы) ──
+        try:
+            f = await client.files.create(
+                file=(filename, io.BytesIO(pdf_bytes), "application/pdf"),
+                purpose="user_data"
+            )
+            messages = [
                 {
                     "role": "user",
                     "content": [
                         {"type": "file", "file": {"file_id": f.id}},
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": base_prompt},
                     ],
                 }
-            ],
-            max_completion_tokens=4000,
-        )
-        if not is_o_series:
-            create_kwargs["response_format"] = {"type": "json_object"}
-            create_kwargs["temperature"] = 0.0
-
-        resp = await client.chat.completions.create(**create_kwargs)
-
-        choice = resp.choices[0]
-        content = choice.message.content
-        if not content:
-            print(f"PDF parse: empty response, finish_reason={choice.finish_reason} refusal={choice.message.refusal}")
+            ]
+            resp = await client.chat.completions.create(**_build_kwargs(messages))
+            choice = resp.choices[0]
+            content = choice.message.content or ""
+            if not content:
+                print(f"PDF Files API: empty response, finish_reason={choice.finish_reason}")
+                return []
+            result = self._parse_items_from_json(_extract_content(content))
+            print(f"PDF parse: Files API OK, {len(result)} items")
+            return result
+        except Exception as e:
+            print(f"PDF Files API error: {e}")
             return []
-        # o-series может вернуть текст без json-обёртки — извлекаем блок
-        if is_o_series and "```" in content:
-            import re as _re
-            m = _re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
-            if m:
-                content = m.group(1).strip()
-        data = json.loads(content)
-
-        items = data.get("items", [])
-        if not isinstance(items, list):
-            return []
-
-        out: List[Dict] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", "")).strip()
-            code = str(item.get("code", "")).strip()
-            unit = str(item.get("unit", "")).strip()
-
-            qty_raw = item.get("quantity", 0)
-            try:
-                quantity = float(qty_raw)
-            except Exception:
-                quantity = 0.0
-
-            display_name = name or code
-            if not display_name:
-                continue
-            if not re.search(r"[a-zA-Zа-яА-Я]", display_name):
-                continue
-
-            out.append({"name": display_name, "quantity": quantity, "unit": unit, "code": code, "mass": 0.0})
-
-        return out
 
 
 class PriceLogic:

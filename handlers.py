@@ -523,7 +523,7 @@ async def process_pdf(message: Message, state: FSMContext, bot: Bot):
         if not pdf_bytes:
             raise ValueError("PDF-файл пуст (0 bytes).")
 
-        await temp_msg.edit_text("Парсинг PDF через OpenAI... ⏳")
+        await temp_msg.edit_text("Парсинг PDF... ⏳")
 
         spec_items = await ai_service_instance.parse_specification_from_pdf_bytes(
             pdf_bytes=pdf_bytes,
@@ -532,8 +532,13 @@ async def process_pdf(message: Message, state: FSMContext, bot: Bot):
         )
 
         if not spec_items:
+            await temp_msg.edit_text("Текстовый парсинг не дал результатов. Распознаю постранично через изображения... 🔍")
+            spec_items = await extract_specification_tables(pdf_path, temp_msg, None)
+
+        if not spec_items:
             menu_msg = await temp_msg.edit_text(
-                "Не удалось распознать спецификацию в PDF.",
+                "Не удалось распознать спецификацию в PDF.\n\n"
+                "Убедитесь, что PDF содержит таблицу спецификации, или попробуйте другой файл.",
                 reply_markup=back_button("back_to_main_menu")
             )
             await set_menu_message(menu_msg, state)
