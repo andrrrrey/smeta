@@ -587,8 +587,7 @@ class AIService:
         choice = resp.choices[0]
         content = choice.message.content
         if not content:
-            logger.warning("PDF parse: empty response, finish_reason=%s refusal=%s",
-                           choice.finish_reason, choice.message.refusal)
+            print(f"PDF parse: empty response, finish_reason={choice.finish_reason} refusal={choice.message.refusal}")
             return []
         # o-series может вернуть текст без json-обёртки — извлекаем блок
         if is_o_series and "```" in content:
