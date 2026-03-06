@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import String, BigInteger, Integer, Numeric, ForeignKey, DateTime, JSON, Text, select, Boolean, event
+from sqlalchemy import String, BigInteger, Integer, Numeric, ForeignKey, DateTime, JSON, Text, select, Boolean, event, text
 from sqlalchemy.sql import func
 from sqlalchemy.engine import Engine
 import datetime
@@ -40,7 +40,8 @@ class PriceListItem(Base):
     __tablename__ = "price_list_item"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(500), index=True, unique=True)
-    price: Mapped[float] = mapped_column(Numeric(10, 2))
+    price: Mapped[float] = mapped_column(Numeric(10, 2))  # work/labor price (backward compat)
+    price_material: Mapped[float] = mapped_column(Numeric(10, 2), default=0.0, server_default="0")
 
 
 class StopWord(Base):
@@ -72,8 +73,9 @@ class CalculationItem(Base):
     mass: Mapped[Optional[float]] = mapped_column(Numeric(10, 3), default=0.0)
     quantity: Mapped[float] = mapped_column(Numeric(10, 2))
     unit: Mapped[str] = mapped_column(String(50))
-    cost_per_unit: Mapped[float] = mapped_column(Numeric(10, 2), default=0.0)
-    total_cost: Mapped[float] = mapped_column(Numeric(12, 2), default=0.0)
+    cost_per_unit: Mapped[float] = mapped_column(Numeric(10, 2), default=0.0)  # work/labor price per unit
+    cost_material_per_unit: Mapped[float] = mapped_column(Numeric(10, 2), default=0.0, server_default="0")
+    total_cost: Mapped[float] = mapped_column(Numeric(12, 2), default=0.0)  # total = (material + work) * qty
     source: Mapped[str] = mapped_column(String(50), default="not_found")
 
     calculation: Mapped["Calculation"] = relationship(back_populates="items")
@@ -217,6 +219,17 @@ class SectionTitle(Base):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        # Migrations: add new columns if they don't exist yet
+        migration_sqls = [
+            "ALTER TABLE price_list_item ADD COLUMN price_material REAL DEFAULT 0.0",
+            "ALTER TABLE calculation_item ADD COLUMN cost_material_per_unit REAL DEFAULT 0.0",
+        ]
+        for sql in migration_sqls:
+            try:
+                await conn.execute(text(sql))
+            except Exception:
+                pass  # Column already exists
 
     async with async_session_factory() as session:
         async with session.begin():
