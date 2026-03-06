@@ -564,8 +564,9 @@ class AIService:
         )
 
         model_name_only = self.model.split('@')[0]
-        resp = await client.chat.completions.create(
-            model = model_name_only,
+        is_o_series = re.match(r'^o\d', model_name_only)
+        create_kwargs = dict(
+            model=model_name_only,
             messages=[
                 {
                     "role": "user",
@@ -575,12 +576,26 @@ class AIService:
                     ],
                 }
             ],
-            response_format={"type": "json_object"},
-            temperature=0.0,
             max_completion_tokens=4000,
         )
+        if not is_o_series:
+            create_kwargs["response_format"] = {"type": "json_object"}
+            create_kwargs["temperature"] = 0.0
 
-        content = resp.choices[0].message.content
+        resp = await client.chat.completions.create(**create_kwargs)
+
+        choice = resp.choices[0]
+        content = choice.message.content
+        if not content:
+            logger.warning("PDF parse: empty response, finish_reason=%s refusal=%s",
+                           choice.finish_reason, choice.message.refusal)
+            return []
+        # o-series может вернуть текст без json-обёртки — извлекаем блок
+        if is_o_series and "```" in content:
+            import re as _re
+            m = _re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
+            if m:
+                content = m.group(1).strip()
         data = json.loads(content)
 
         items = data.get("items", [])
