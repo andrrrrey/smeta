@@ -5,7 +5,7 @@ import pdfplumber
 import pandas as pd
 import xlsxwriter
 import base64
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, AsyncGenerator, Tuple
 from aiogram import Bot
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
@@ -141,6 +141,79 @@ async def extract_specification_tables(
             pass
 
     return _deduplicate_items(all_items)
+
+
+async def extract_specification_tables_streaming(
+        pdf_path: str,
+        page_indices: Optional[List[int]] = None
+) -> AsyncGenerator[Tuple[List[Dict], int, int], None]:
+    """
+    Async generator: yields (batch_items, pages_done, total_pages).
+    Enables parallel price search while PDF is still being recognised.
+    For text PDFs: yields one batch per AI text-parsing call.
+    For scanned PDFs: yields one batch per OCR page.
+    """
+    total_pages_in_doc = 0
+    try:
+        doc = pymupdf.open(pdf_path)
+        total_pages_in_doc = doc.page_count
+        doc.close()
+    except Exception as e:
+        print(f"Failed to open PDF for streaming: {e}")
+        return
+
+    if total_pages_in_doc == 0:
+        return
+
+    pages_to_process = page_indices if page_indices else list(range(total_pages_in_doc))
+    total_to_process = len(pages_to_process)
+
+    # ── Method 1: Text extraction (no AI needed, very fast) ──────────
+    page_texts: List[tuple] = []
+    try:
+        doc = pymupdf.open(pdf_path)
+        for page_idx in pages_to_process:
+            try:
+                page = doc.load_page(page_idx)
+                text = page.get_text('text')
+                if text and len(text.strip()) > 50:
+                    page_texts.append((page_idx + 1, text))
+            except Exception as e:
+                print(f"Text extraction error page {page_idx}: {e}")
+        doc.close()
+    except Exception as e:
+        print(f"Failed to open PDF for text streaming: {e}")
+        page_texts = []
+
+    if page_texts:
+        # Stream AI batches — yield items as each AI call completes so
+        # price search can start on already-extracted items immediately.
+        BATCH_CHARS = 12000
+        current_batch: List[str] = []
+        current_chars = 0
+
+        for i, (page_num, text) in enumerate(page_texts):
+            entry = f"[Стр.{page_num}]\n{text}"
+            if current_chars + len(entry) > BATCH_CHARS and current_batch:
+                batch_text = "\n\n".join(current_batch)
+                items = await ai_service_instance.parse_specification_from_text(batch_text)
+                yield items, i, len(page_texts)
+                current_batch = [entry]
+                current_chars = len(entry)
+            else:
+                current_batch.append(entry)
+                current_chars += len(entry)
+
+        if current_batch:
+            batch_text = "\n\n".join(current_batch)
+            items = await ai_service_instance.parse_specification_from_text(batch_text)
+            yield items, len(page_texts), len(page_texts)
+        return
+
+    # ── Method 2: OCR page by page (yield after each page) ───────────
+    for i, page_idx in enumerate(pages_to_process):
+        items = await _try_ocr_and_ai_extraction(pdf_path, [page_idx], None, total_pages_in_doc)
+        yield (items or []), i + 1, total_to_process
 
 
 def create_calculation_excel(items: List[CalculationItem], total: float,

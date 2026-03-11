@@ -1,5 +1,6 @@
 import os
 import io
+import time
 import asyncio
 import pandas as pd
 import pytz
@@ -40,8 +41,8 @@ from keyboards import (
 from utils import (
     delete_user_message, delete_previous_menu, set_menu_message,
     send_temp_notification, add_message_to_history, is_owner,
-    extract_specification_tables, create_calculation_excel,
-    parse_excel_for_update, create_pricelist_excel,
+    extract_specification_tables, extract_specification_tables_streaming,
+    create_calculation_excel, parse_excel_for_update, create_pricelist_excel,
     parse_spec_excel_for_creation
 )
 from services import price_logic_instance, ai_service_instance, vector_db_instance
@@ -246,39 +247,55 @@ async def _execute_pdf_processing(
     page_indices: Optional[List[int]],
     page_label: str,
 ):
-    """Shared logic: extract spec from saved PDF and run price calculation."""
+    """Shared logic: extract spec from saved PDF and run price calculation.
+
+    Uses a streaming pipeline so price search starts in parallel with PDF
+    recognition.  Progress is shown as two counters:
+      📄 Распознавание: X/Y стр.
+      💰 Цены: N/M позиций
+    """
     data = await state.get_data()
     pdf_path = data.get("current_pdf_path")
     pdf_filename = data.get("current_pdf_filename")
 
     processing_msg = await send_msg(
-        f"Начинаю обработку... (Страницы: {page_label})" if page_indices else "Начинаю обработку... (Авто-поиск по всему документу)"
+        f"Начинаю обработку... (Страницы: {page_label})"
+        if page_indices else
+        "Начинаю обработку... (Авто-поиск по всему документу)"
     )
 
     calculation_created = False
-    try:
-        spec_items = await extract_specification_tables(pdf_path, processing_msg, page_indices)
+    last_edit_ts = 0.0
 
-        if not spec_items:
-            menu_msg = await processing_msg.edit_text(
-                "Не смог найти таблицу спецификации на указанных страницах.\n\n"
-                "Попробуйте ввести другие номера (<code>10-12</code>) или нажмите <b>«Авто»</b>.",
-                reply_markup=page_numbers_keyboard(),
-                parse_mode="HTML"
-            )
-            await set_menu_message(menu_msg, state)
-            await state.set_state(CalcState.awaiting_page_numbers)
+    async def update_progress(pages_done: int, pages_total: int,
+                              priced: int, total_items: int):
+        nonlocal last_edit_ts
+        now = time.monotonic()
+        if now - last_edit_ts < 2.0:  # throttle: max 1 edit per 2 s
             return
+        last_edit_ts = now
 
-        await processing_msg.edit_text("Спецификация найдена. Ищу цены... 💰")
+        parts = []
+        if pages_total > 0:
+            parts.append(f"📄 Распознавание: {pages_done}/{pages_total} стр.")
+        if total_items > 0:
+            parts.append(f"💰 Цены: {priced}/{total_items} позиций")
+        msg = "\n".join(parts) if parts else "⏳ Обрабатываю..."
+        try:
+            await processing_msg.edit_text(msg)
+        except TelegramBadRequest:
+            pass
+
+    try:
+        items_stream = extract_specification_tables_streaming(pdf_path, page_indices)
 
         async with async_session_factory() as session:
-            calculation = await price_logic_instance.process_specification(
+            calculation = await price_logic_instance.process_specification_streaming(
                 session,
                 user_id,
-                spec_items,
                 pdf_filename,
-                processing_msg,
+                items_stream,
+                update_progress,
                 bot,
                 config
             )
@@ -287,6 +304,19 @@ async def _execute_pdf_processing(
         calculation_created = True
         await processing_msg.delete()
         return calculation
+
+    except ValueError as e:
+        if "no_items_found" in str(e):
+            menu_msg = await processing_msg.edit_text(
+                "Не смог найти таблицу спецификации на указанных страницах.\n\n"
+                "Попробуйте ввести другие номера (<code>10-12</code>) или нажмите <b>«Авто»</b>.",
+                reply_markup=page_numbers_keyboard(),
+                parse_mode="HTML"
+            )
+            await set_menu_message(menu_msg, state)
+            await state.set_state(CalcState.awaiting_page_numbers)
+            return None
+        raise
 
     except Exception as e:
         error_str = str(e).lower()
@@ -313,7 +343,11 @@ async def _execute_pdf_processing(
         if calculation_created:
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
-            await state.update_data(current_pdf_path=None, current_pdf_filename=None, current_pdf_total_pages=0)
+            await state.update_data(
+                current_pdf_path=None,
+                current_pdf_filename=None,
+                current_pdf_total_pages=0
+            )
 
 
 @router.callback_query(CalcState.awaiting_page_numbers, F.data == "page_numbers_auto")

@@ -843,6 +843,237 @@ class PriceLogic:
 
         return 0.0, 0.0, "not_found"
 
+    # ── Helpers for streaming pipeline ───────────────────────────────
+
+    def _clean_spec_items(self, raw_items: List[Dict]) -> List[Dict]:
+        """Filter garbage rows and classify each item as section/regular."""
+        garbage_triggers = [
+            "наименовани", "позици", "единицаизм", "кодпродукци",
+            "колво", "примечани", "опросног", "лист №", "лист№"
+        ]
+        cleaned = []
+        for item in raw_items:
+            name_raw = item.get("name", "").strip()
+            qty = item.get("quantity", 0.0)
+            unit = item.get("unit", "")
+
+            if not name_raw or len(name_raw) < 2:
+                continue
+            name_clean = name_raw.lower().replace(" ", "")
+            if any(trigger in name_clean for trigger in garbage_triggers):
+                continue
+
+            is_section = False
+            if qty <= 0 and not unit:
+                if self.is_section_title(name_raw):
+                    is_section = True
+
+            if qty <= 0 and not is_section and not unit:
+                continue
+
+            item = dict(item)  # avoid mutating caller's dict
+            item['is_section_flag'] = is_section
+            cleaned.append(item)
+        return cleaned
+
+    async def _price_one_item(self, item: Dict, bot=None, config=None) -> CalculationItem:
+        """Price a single item. Returns a CalculationItem without calculation_id."""
+        is_section = item.get('is_section_flag', False)
+        item_name = item.get("name", "Unknown Item").strip()
+        code_val = item.get("code", "").strip()
+        code = ""
+        if code_val and code_val.lower() not in ['nan', 'none', '<na>']:
+            code = code_val
+
+        quantity = item.get("quantity", 0.0)
+        unit = item.get("unit", "-")
+
+        full_item_name = item_name
+        if code and code.lower() not in item_name.lower() and "зип" not in item_name.lower():
+            full_item_name = f"{item_name} {code}"
+
+        source = "not_found"
+        price_material = 0.0
+        price_work = 0.0
+
+        if is_section:
+            source = "section"
+            quantity = 0.0
+        elif self.is_consumable(full_item_name):
+            source = "consumable"
+        else:
+            price_material, price_work, source = await self.find_internal_price(full_item_name)
+
+            if source == "not_found":
+                await asyncio.sleep(0.5)
+                try:
+                    ai_response = await self.ai_service.get_price_with_analog_search(
+                        item_name=item_name,
+                        item_code=code,
+                        pricelist_cache=self.pricelist_cache
+                    )
+                    price_work = ai_response.get("price", 0.0)
+                    source = ai_response.get("source", "not_found")
+                except Exception as e:
+                    err_str = str(e)
+                    if "429" in err_str or "quota" in err_str.lower():
+                        if bot and config:
+                            await _notify_owners_internal(
+                                bot, config, f"OpenAI API Error (Price Search):\n{err_str}"
+                            )
+                    print(f"Error AI processing item {item_name}: {e}")
+
+        item_total = (price_material + price_work) * quantity
+        return CalculationItem(
+            name=item_name,
+            code=code,
+            mass=item.get("mass", 0.0),
+            quantity=quantity,
+            unit=unit,
+            cost_per_unit=price_work,
+            cost_material_per_unit=price_material,
+            total_cost=item_total,
+            source=source
+        )
+
+    async def process_specification_streaming(
+            self,
+            session: AsyncSession,
+            user_id: int,
+            pdf_filename: Optional[str],
+            items_stream,
+            progress_callback,
+            bot: Optional[Bot] = None,
+            config=None
+    ) -> "Calculation":
+        """
+        Pipeline: streams (batch_items, pages_done, total_pages) from items_stream,
+        prices items in parallel (up to PRICING_CONCURRENCY concurrent AI calls).
+        Calls progress_callback(pages_done, pages_total, priced, total_items) after each update.
+        Raises ValueError("no_items_found") if nothing was extracted.
+        """
+        await self.load_stopwords(session)
+        await self.load_section_titles(session)
+        await self.load_pricelist_cache(session)
+
+        new_calculation = Calculation(user_id=user_id, status="pending", pdf_filename=pdf_filename)
+        session.add(new_calculation)
+        try:
+            await session.commit()
+            await session.refresh(new_calculation)
+        except Exception as e:
+            await session.rollback()
+            if bot and config:
+                await _notify_owners_internal(bot, config, f"DB Error (Create Calculation):\n{e}")
+            raise
+        calc_id = new_calculation.id
+
+        PRICING_CONCURRENCY = 3
+        semaphore = asyncio.Semaphore(PRICING_CONCURRENCY)
+
+        # Mutable shared state — safe in single-threaded asyncio
+        prog = {"pages_done": 0, "pages_total": 0, "priced": 0, "total": 0}
+        all_priced_items: List[CalculationItem] = []
+        seen_keys: set = set()
+
+        async def price_and_store(item: Dict):
+            async with semaphore:
+                try:
+                    calc_item = await self._price_one_item(item, bot, config)
+                except Exception as e:
+                    err_str = str(e)
+                    if "429" in err_str or "quota" in err_str.lower():
+                        raise  # propagate quota errors
+                    print(f"Pricing error for '{item.get('name')}': {e}")
+                    calc_item = CalculationItem(
+                        name=item.get("name", ""),
+                        code=item.get("code", ""),
+                        mass=item.get("mass", 0.0),
+                        quantity=item.get("quantity", 0.0),
+                        unit=item.get("unit", "-"),
+                        cost_per_unit=0.0,
+                        cost_material_per_unit=0.0,
+                        total_cost=0.0,
+                        source="not_found"
+                    )
+            all_priced_items.append(calc_item)
+            if not item.get('is_section_flag'):
+                prog["priced"] += 1
+            await progress_callback(prog["pages_done"], prog["pages_total"],
+                                    prog["priced"], prog["total"])
+
+        pricing_tasks: List = []
+
+        async for batch_items, pages_done, pages_total in items_stream:
+            prog["pages_done"] = pages_done
+            prog["pages_total"] = pages_total
+
+            cleaned = self._clean_spec_items(batch_items)
+
+            # Cross-batch deduplication
+            unique_batch = []
+            for item in cleaned:
+                key = (
+                    item.get("name", "").lower().strip(),
+                    item.get("code", "").strip(),
+                    round(item.get("quantity", 0), 2)
+                )
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    unique_batch.append(item)
+
+            real_count = sum(1 for x in unique_batch if not x.get('is_section_flag'))
+            prog["total"] += real_count if real_count > 0 else len(unique_batch)
+
+            await progress_callback(prog["pages_done"], prog["pages_total"],
+                                    prog["priced"], prog["total"])
+
+            # Start pricing tasks immediately — they run while next batch is extracted
+            for item in unique_batch:
+                task = asyncio.create_task(price_and_store(item))
+                pricing_tasks.append(task)
+
+        # Wait for all pricing to complete
+        if pricing_tasks:
+            results = await asyncio.gather(*pricing_tasks, return_exceptions=True)
+            for r in results:
+                if isinstance(r, Exception):
+                    err_str = str(r)
+                    if "429" in err_str or "quota" in err_str.lower():
+                        try:
+                            await session.delete(new_calculation)
+                            await session.commit()
+                        except Exception:
+                            pass
+                        raise r
+
+        if not all_priced_items:
+            try:
+                await session.delete(new_calculation)
+                await session.commit()
+            except Exception:
+                pass
+            raise ValueError("no_items_found")
+
+        # Assign calc_id and persist all items
+        total_calc_cost = 0.0
+        for item in all_priced_items:
+            item.calculation_id = calc_id
+            total_calc_cost += float(item.total_cost)
+
+        try:
+            calc = await session.get(Calculation, calc_id)
+            calc.total_cost = total_calc_cost
+            session.add_all(all_priced_items)
+            await session.commit()
+            await session.refresh(calc, ["items"])
+            return calc
+        except Exception as e:
+            await session.rollback()
+            if bot and config:
+                await _notify_owners_internal(bot, config, f"DB Error (Save Items):\n{e}")
+            raise
+
     async def process_specification(
             self,
             session: AsyncSession,
