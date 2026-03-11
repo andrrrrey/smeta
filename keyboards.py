@@ -131,6 +131,14 @@ def back_button(callback_data: str):
     return builder.as_markup()
 
 
+def page_numbers_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔍 Авто (все страницы)", callback_data="page_numbers_auto")
+    builder.button(text="⬅️ Назад", callback_data="back_to_main_menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def ai_models_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="🤖 gpt-4o (OpenAI Vision)", callback_data="ai_set_model_gpt-4o")

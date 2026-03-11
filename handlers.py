@@ -5,6 +5,7 @@ import pandas as pd
 import pytz
 import base64
 import pdfplumber
+import pymupdf
 import html
 from decimal import Decimal
 import hashlib
@@ -34,7 +35,7 @@ from keyboards import (
     price_list_menu_keyboard, confirm_clear_price_list_keyboard,
     ai_models_keyboard, calc_history_keyboard,
     admin_users_list_keyboard, admin_user_manage_keyboard,
-    section_titles_menu_keyboard
+    section_titles_menu_keyboard, page_numbers_keyboard
 )
 from utils import (
     delete_user_message, delete_previous_menu, set_menu_message,
@@ -237,18 +238,141 @@ def parse_page_numbers(text: str, max_pages: int) -> (Optional[List[int]], Optio
     return sorted(list(indices)), None
 
 
+async def _execute_pdf_processing(
+    state: FSMContext,
+    bot: Bot,
+    user_id: int,
+    send_msg,
+    page_indices: Optional[List[int]],
+    page_label: str,
+):
+    """Shared logic: extract spec from saved PDF and run price calculation."""
+    data = await state.get_data()
+    pdf_path = data.get("current_pdf_path")
+    pdf_filename = data.get("current_pdf_filename")
+
+    processing_msg = await send_msg(
+        f"Начинаю обработку... (Страницы: {page_label})" if page_indices else "Начинаю обработку... (Авто-поиск по всему документу)"
+    )
+
+    calculation_created = False
+    try:
+        spec_items = await extract_specification_tables(pdf_path, processing_msg, page_indices)
+
+        if not spec_items:
+            menu_msg = await processing_msg.edit_text(
+                "Не смог найти таблицу спецификации на указанных страницах.\n\n"
+                "Попробуйте ввести другие номера (<code>10-12</code>) или нажмите <b>«Авто»</b>.",
+                reply_markup=page_numbers_keyboard(),
+                parse_mode="HTML"
+            )
+            await set_menu_message(menu_msg, state)
+            await state.set_state(CalcState.awaiting_page_numbers)
+            return
+
+        await processing_msg.edit_text("Спецификация найдена. Ищу цены... 💰")
+
+        async with async_session_factory() as session:
+            calculation = await price_logic_instance.process_specification(
+                session,
+                user_id,
+                spec_items,
+                pdf_filename,
+                processing_msg,
+                bot,
+                config
+            )
+            await session.refresh(calculation, ["items"])
+
+        calculation_created = True
+        await processing_msg.delete()
+        return calculation
+
+    except Exception as e:
+        error_str = str(e).lower()
+        if "billing" in error_str or "quota" in error_str or "429" in error_str:
+            try:
+                await processing_msg.delete()
+            except TelegramBadRequest:
+                pass
+            raise
+
+        try:
+            await processing_msg.edit_text(
+                f"Ошибка: {e}\nПопробуйте другой файл или страницы.",
+                reply_markup=page_numbers_keyboard()
+            )
+        except TelegramBadRequest:
+            pass
+
+        await set_menu_message(processing_msg, state)
+        await state.set_state(CalcState.awaiting_page_numbers)
+        return None
+
+    finally:
+        if calculation_created:
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+            await state.update_data(current_pdf_path=None, current_pdf_filename=None, current_pdf_total_pages=0)
+
+
+@router.callback_query(CalcState.awaiting_page_numbers, F.data == "page_numbers_auto")
+async def process_page_numbers_auto(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    await callback.answer()
+    await delete_previous_menu(state, bot, callback.message.chat.id)
+
+    data = await state.get_data()
+    pdf_path = data.get("current_pdf_path")
+    if not pdf_path or not os.path.exists(pdf_path):
+        await send_temp_notification(callback.message, "Ошибка: PDF-файл не найден. Загрузите файл заново.", delay=7)
+        await state.clear()
+        async with async_session_factory() as session:
+            user = await session.get(User, callback.from_user.id)
+        menu_msg = await callback.message.answer(
+            f"Здравствуйте, {user.first_name}! Я бот для расчета смет.",
+            reply_markup=main_menu_keyboard()
+        )
+        await set_menu_message(menu_msg, state)
+        await state.set_state(MainMenu.start)
+        return
+
+    try:
+        calculation = await _execute_pdf_processing(
+            state, bot, callback.from_user.id,
+            callback.message.answer, None, "авто"
+        )
+    except Exception as e:
+        await callback.message.answer(
+            f"🚨 <b>Ошибка OPENAI:</b>\n\n{e}\n\n"
+            "Проверьте баланс (Billing) или лимиты (Quota) на platform.openai.com.",
+            parse_mode="HTML"
+        )
+        await state.clear()
+        async with async_session_factory() as session:
+            user = await session.get(User, callback.from_user.id)
+        menu_msg = await callback.message.answer(
+            f"Здравствуйте, {user.first_name}! Я бот для расчета смет.",
+            reply_markup=main_menu_keyboard()
+        )
+        await set_menu_message(menu_msg, state)
+        await state.set_state(MainMenu.start)
+        return
+
+    if calculation:
+        await send_calculation_view(callback.message, state, calculation)
+
+
 @router.message(CalcState.awaiting_page_numbers, F.text)
 async def process_page_numbers(message: Message, state: FSMContext, bot: Bot):
     await add_message_to_history(message, state)
 
     data = await state.get_data()
     pdf_path = data.get("current_pdf_path")
-    pdf_filename = data.get("current_pdf_filename")
     total_pages = data.get("current_pdf_total_pages", 0)
 
     if not pdf_path or not os.path.exists(pdf_path):
         await delete_previous_menu(state, bot, message.chat.id)
-        await send_temp_notification(message, "Ошибка: PDF-файл не найден. Начните заново.", delay=7)
+        await send_temp_notification(message, "Ошибка: PDF-файл не найден. Загрузите файл заново.", delay=7)
         await state.clear()
 
         async with async_session_factory() as session:
@@ -266,89 +390,34 @@ async def process_page_numbers(message: Message, state: FSMContext, bot: Bot):
         return
 
     await delete_previous_menu(state, bot, message.chat.id)
-    processing_msg = await message.answer(
-        f"Начинаю обработку... (Страницы: {message.text})" if page_indices else "Начинаю обработку... (Авто-поиск)"
-    )
 
-    spec_items = []
-    calculation_created = False
     try:
-        spec_items = await extract_specification_tables(
-            pdf_path,
-            processing_msg,
-            page_indices
+        calculation = await _execute_pdf_processing(
+            state, bot, message.from_user.id,
+            message.answer, page_indices, message.text
         )
-
-        if not spec_items:
-            menu_msg = await processing_msg.edit_text(
-                "Не смог найти таблицу спецификации на указанных страницах.\n\n"
-                "Попробуйте ввести другие номера (<code>10-12</code>) или <code>авто</code>.",
-                reply_markup=back_button("back_to_main_menu"),
-                parse_mode="HTML"
-            )
-            await set_menu_message(menu_msg, state)
-            await state.set_state(CalcState.awaiting_page_numbers)
-            return
-
-        await processing_msg.edit_text("Спецификация найдена. Ищу цены... 💰")
-
-        async with async_session_factory() as session:
-            calculation = await price_logic_instance.process_specification(
-                session,
-                message.from_user.id,
-                spec_items,
-                pdf_filename,
-                processing_msg,
-                bot,
-                config
-            )
-            await session.refresh(calculation, ["items"])
-
-        calculation_created = True
-        await processing_msg.delete()
-        await send_calculation_view(message, state, calculation)
-
-    except (ValueError, Exception) as e:
+    except Exception as e:
         error_str = str(e).lower()
         if "billing" in error_str or "quota" in error_str or "429" in error_str:
-            try:
-                await processing_msg.delete()
-            except TelegramBadRequest:
-                pass
-
             await message.answer(
                 f"🚨 <b>Ошибка OPENAI:</b>\n\n{e}\n\n"
                 "Проверьте баланс (Billing) или лимиты (Quota) на platform.openai.com.\n"
                 "Бот не может работать без оплаты API.",
                 parse_mode="HTML"
             )
-
             await state.clear()
             async with async_session_factory() as session:
                 user = await session.get(User, message.from_user.id)
-            text = f"Здравствуйте, {user.first_name}! Я бот для расчета смет."
-            menu_msg = await message.answer(text, reply_markup=main_menu_keyboard())
+            menu_msg = await message.answer(
+                f"Здравствуйте, {user.first_name}! Я бот для расчета смет.",
+                reply_markup=main_menu_keyboard()
+            )
             await set_menu_message(menu_msg, state)
             await state.set_state(MainMenu.start)
-            return
-
-        try:
-            await processing_msg.edit_text(
-                f"Ошибка: {e}\nПопробуйте другой файл или страницы.",
-                reply_markup=back_button("back_to_main_menu")
-            )
-        except TelegramBadRequest:
-            pass
-
-        await set_menu_message(processing_msg, state)
-        await state.set_state(CalcState.awaiting_page_numbers)
         return
 
-    finally:
-        if calculation_created:
-            if os.path.exists(pdf_path):
-                os.remove(pdf_path)
-            await state.update_data(current_pdf_path=None, current_pdf_filename=None, current_pdf_total_pages=0)
+    if calculation:
+        await send_calculation_view(message, state, calculation)
 
 
 async def send_calculation_view(message_or_callback: Message | CallbackQuery, state: FSMContext,
@@ -523,79 +592,43 @@ async def process_pdf(message: Message, state: FSMContext, bot: Bot):
         if not pdf_bytes:
             raise ValueError("PDF-файл пуст (0 bytes).")
 
-        await temp_msg.edit_text("Парсинг PDF... ⏳")
+        doc = pymupdf.open(pdf_path)
+        total_pages = doc.page_count
+        doc.close()
 
-        spec_items = await ai_service_instance.parse_specification_from_pdf_bytes(
-            pdf_bytes=pdf_bytes,
-            filename=pdf_filename,
-            user_hint=""
+        await state.update_data(
+            current_pdf_path=pdf_path,
+            current_pdf_filename=pdf_filename,
+            current_pdf_total_pages=total_pages,
         )
-
-        if not spec_items:
-            await temp_msg.edit_text("Текстовый парсинг не дал результатов. Распознаю постранично через изображения... 🔍")
-            spec_items = await extract_specification_tables(pdf_path, temp_msg, None)
-
-        if not spec_items:
-            menu_msg = await temp_msg.edit_text(
-                "Не удалось распознать спецификацию в PDF.\n\n"
-                "Убедитесь, что PDF содержит таблицу спецификации, или попробуйте другой файл.",
-                reply_markup=back_button("back_to_main_menu")
-            )
-            await set_menu_message(menu_msg, state)
-            await state.set_state(CalcState.awaiting_pdf)
-            return
-
-        await temp_msg.edit_text("Рассчет сметы... ⏳")
-
-        async with async_session_factory() as session:
-            calculation = await price_logic_instance.process_specification(
-                session,
-                message.from_user.id,
-                spec_items,
-                pdf_filename,
-                temp_msg,
-                bot,
-                config
-            )
-            await session.refresh(calculation, ["items"])
-
-        await temp_msg.delete()
-        await send_calculation_view(message, state, calculation)
-
-    except Exception as e:
-        err = str(e).lower()
-        if "billing" in err or "quota" in err or "429" in err:
-            try:
-                await temp_msg.delete()
-            except TelegramBadRequest:
-                pass
-
-            await message.answer(
-                f"🚨 <b>Ошибка OPENAI:</b>\n\nПроверьте Billing (оплату) или Quota (лимиты)!\nОшибка: {e}",
-                parse_mode="HTML"
-            )
-            await state.clear()
-            return
 
         menu_msg = await temp_msg.edit_text(
-            f"Ошибка при обработке PDF: {e}",
-            reply_markup=back_button("back_to_main_menu")
+            f"📄 <b>{html.escape(pdf_filename)}</b>\n"
+            f"Всего страниц: <b>{total_pages}</b>\n\n"
+            f"На каких страницах находится таблица со спецификацией?\n\n"
+            f"• <code>10-12</code> — диапазон страниц\n"
+            f"• <code>5,7,9</code> — отдельные страницы\n"
+            f"• <code>5,7,10-12</code> — комбинация\n"
+            f"• Кнопка <b>«Авто»</b> — обработать все страницы (медленно)",
+            reply_markup=page_numbers_keyboard(),
+            parse_mode="HTML"
         )
         await set_menu_message(menu_msg, state)
-        await state.set_state(CalcState.awaiting_pdf)
+        await state.set_state(CalcState.awaiting_page_numbers)
 
-    finally:
+    except Exception as e:
         if os.path.exists(pdf_path):
             try:
                 os.remove(pdf_path)
             except OSError:
                 pass
 
-        await state.update_data(
-            current_pdf_path=None,
-            current_pdf_filename=None,
-            current_pdf_total_pages=0
+        menu_msg = await temp_msg.edit_text(
+            f"Ошибка при загрузке PDF: {e}",
+            reply_markup=back_button("back_to_main_menu")
         )
+        await set_menu_message(menu_msg, state)
+        await state.set_state(CalcState.awaiting_pdf)
 
 
 @router.message(CalcState.awaiting_pdf, F.document.mime_type.in_([
