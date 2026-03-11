@@ -588,6 +588,49 @@ class AIService:
                 return await self.parse_specification_from_image(base64_image, user_hint, retry_attempt=1)
             return []
 
+    async def parse_specification_from_text(self, text: str) -> List[Dict]:
+        """Parse specification from plain text extracted from PDF pages (faster than Vision API)."""
+        client = self.openai_client
+        if not client:
+            return []
+
+        prompt = (
+            "Извлеки спецификацию из текста таблицы.\n"
+            "Таблица содержит колонки: Позиция, Наименование, Тип/марка, Код, Завод, Ед.изм., Кол-во, Масса, Примечания.\n"
+            "Верни только JSON {\"items\": [...]} где каждый item:\n"
+            "{\"name\": string, \"quantity\": number, \"unit\": string, \"code\": string}\n"
+            "Правила:\n"
+            "1) Разделы/заголовки (строки без кол-ва, напр. 'Система П2') — quantity=0, unit='', code=''.\n"
+            "2) Если кол-ва нет — quantity=0.\n"
+            "3) Игнорируй строки штампа/колонтитула: 'Изм. Кол.уч.', 'Лист', 'Подпись', 'Позиция', "
+            "'Наименование и техническая характеристика', 'Ед. изм.', 'Кол-во', 'Масса', 'Примечания' и т.п.\n"
+            "4) Только поля: name, quantity, unit, code.\n"
+        )
+
+        model_name_only = self.model.split('@')[0]
+        is_o_series = bool(re.match(r'^o\d', model_name_only))
+
+        try:
+            messages = [{"role": "user", "content": f"{prompt}\n\nТекст из PDF:\n{text}"}]
+            kwargs = dict(model=model_name_only, messages=messages, max_completion_tokens=4000)
+            if not is_o_series:
+                kwargs["response_format"] = {"type": "json_object"}
+                kwargs["temperature"] = 0.0
+            resp = await client.chat.completions.create(**kwargs)
+            content = resp.choices[0].message.content or ""
+            if not content:
+                return []
+            if "```" in content:
+                m = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
+                if m:
+                    content = m.group(1).strip()
+            result = self._parse_items_from_json(content)
+            print(f"parse_specification_from_text: {len(result)} items")
+            return result
+        except Exception as e:
+            print(f"parse_specification_from_text error: {e}")
+            return []
+
     async def parse_specification_from_pdf_bytes(self, pdf_bytes: bytes, filename: str = "spec.pdf",
                                                  user_hint: str = "") -> List[Dict]:
         client = self.openai_client
