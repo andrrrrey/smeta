@@ -97,6 +97,25 @@ async def extract_specification_tables(
     pages_to_process = page_indices if page_indices else list(range(total_pages))
     all_items = []
 
+    # ── Метод 1: прямое извлечение текста (текстовый PDF, быстро) ──────────
+    if processing_msg:
+        try:
+            await processing_msg.edit_text("📄 Извлекаю текст из PDF...")
+        except TelegramBadRequest:
+            pass
+
+    all_items = await _try_text_batch_extraction(pdf_path, pages_to_process)
+
+    if all_items:
+        return _deduplicate_items(all_items)
+
+    # ── Метод 2: OCR через Vision API постранично (для сканов) ─────────────
+    if processing_msg:
+        try:
+            await processing_msg.edit_text("📷 Текст не найден, запускаю OCR-распознавание...")
+        except TelegramBadRequest:
+            pass
+
     for i, page_idx in enumerate(pages_to_process):
         current_page_num = page_idx + 1
         page_items = []
@@ -104,7 +123,7 @@ async def extract_specification_tables(
         if processing_msg:
             try:
                 progress_percent = int(((i) / len(pages_to_process)) * 100)
-                await processing_msg.edit_text(f"🤖 AI-распознавание страницы {current_page_num} ({progress_percent}%)")
+                await processing_msg.edit_text(f"🤖 OCR страницы {current_page_num} ({progress_percent}%)")
             except TelegramBadRequest:
                 pass
 
@@ -603,6 +622,63 @@ def parse_spec_excel_for_creation(file_path: str) -> List[Dict]:
         raise ValueError("Файл Excel пуст, данные не найдены или структура таблицы некорректна.")
 
     return _deduplicate_items(spec_items)
+
+
+async def _try_text_batch_extraction(
+        pdf_path: str,
+        page_indices: List[int],
+) -> List[Dict]:
+    """Extract text from PDF pages using pymupdf and send to AI in batches.
+
+    Works for text-based PDFs (not scanned). Much faster and cheaper than Vision API.
+    """
+    try:
+        doc = pymupdf.open(pdf_path)
+        page_texts: List[tuple] = []  # (page_num, text)
+
+        for page_idx in page_indices:
+            try:
+                page = doc.load_page(page_idx)
+                text = page.get_text('text')
+                if text and len(text.strip()) > 50:
+                    page_texts.append((page_idx + 1, text))
+            except Exception as e:
+                print(f"Text extraction error page {page_idx}: {e}")
+
+        doc.close()
+
+        if not page_texts:
+            return []
+
+        # Batch pages so each batch stays under ~12 000 chars
+        BATCH_CHARS = 12000
+        all_items: List[Dict] = []
+        current_batch: List[str] = []
+        current_chars = 0
+
+        async def _flush_batch():
+            if not current_batch:
+                return
+            batch_text = "\n\n".join(current_batch)
+            items = await ai_service_instance.parse_specification_from_text(batch_text)
+            all_items.extend(items)
+
+        for page_num, text in page_texts:
+            entry = f"[Стр.{page_num}]\n{text}"
+            if current_chars + len(entry) > BATCH_CHARS and current_batch:
+                await _flush_batch()
+                current_batch = [entry]
+                current_chars = len(entry)
+            else:
+                current_batch.append(entry)
+                current_chars += len(entry)
+
+        await _flush_batch()
+        return all_items
+
+    except Exception as e:
+        print(f"_try_text_batch_extraction failed: {e}")
+        return []
 
 
 async def _try_ocr_and_ai_extraction(
