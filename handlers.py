@@ -585,6 +585,15 @@ async def process_pdf(message: Message, state: FSMContext, bot: Bot):
     pdf_filename = message.document.file_name or f"{message.document.file_unique_id}.pdf"
 
     try:
+        MAX_PDF_SIZE = 20 * 1024 * 1024  # 20 MB — лимит Telegram Bot API
+        file_size = message.document.file_size or 0
+        if file_size > MAX_PDF_SIZE:
+            raise ValueError(
+                f"Файл слишком большой ({file_size / 1024 / 1024:.1f} МБ). "
+                f"Telegram позволяет загружать файлы не более 20 МБ. "
+                f"Пожалуйста, уменьшите размер PDF и попробуйте снова."
+            )
+
         await bot.download(message.document, destination=pdf_path)
 
         with open(pdf_path, "rb") as f:
