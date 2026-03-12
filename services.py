@@ -570,6 +570,9 @@ class AIService:
 
             return validated_results
         except OpenAIError as e:
+            err_str = str(e)
+            if "429" in err_str or "rate_limit" in err_str.lower() or "quota" in err_str.lower():
+                raise
             print(f"OpenAI Vision error: {e}")
             if retry_attempt == 0:
                 await asyncio.sleep(1)
@@ -582,6 +585,9 @@ class AIService:
                 return await self.parse_specification_from_image(base64_image, user_hint, retry_attempt=1)
             return []
         except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "rate_limit" in err_str.lower() or "quota" in err_str.lower():
+                raise
             print(f"Vision unexpected error: {e}")
             if retry_attempt == 0:
                 await asyncio.sleep(1)
@@ -628,6 +634,9 @@ class AIService:
             print(f"parse_specification_from_text: {len(result)} items")
             return result
         except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "rate_limit" in err_str.lower() or "quota" in err_str.lower():
+                raise
             print(f"parse_specification_from_text error: {e}")
             return []
 
