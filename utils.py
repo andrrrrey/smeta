@@ -750,6 +750,9 @@ async def _try_text_batch_extraction(
         return all_items
 
     except Exception as e:
+        err_str = str(e)
+        if "429" in err_str or "rate_limit" in err_str.lower() or "quota" in err_str.lower():
+            raise
         print(f"_try_text_batch_extraction failed: {e}")
         return []
 
@@ -775,11 +778,17 @@ async def _try_ocr_and_ai_extraction(
                 if page_results:
                     all_results.extend(page_results)
             except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "rate_limit" in err_str.lower() or "quota" in err_str.lower():
+                    raise
                 print(f"Error processing AI page {page_index}: {e}")
 
         doc.close()
         return all_results
     except Exception as e:
+        err_str = str(e)
+        if "429" in err_str or "rate_limit" in err_str.lower() or "quota" in err_str.lower():
+            raise
         print(f"AI extraction failed: {e}")
         return []
 
