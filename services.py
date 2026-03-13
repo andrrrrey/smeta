@@ -484,13 +484,14 @@ class AIService:
 
         prompt = (
             "Ты OCR-ассистент. Извлеки из изображения таблицу спецификации.\n"
-            "Нужно вернуть JSON-массив объектов. Каждый объект:\n"
+            "Верни только JSON {\"items\": [...]} где каждый item:\n"
             "{\"name\": string, \"quantity\": float, \"unit\": string, \"code\": string, \"mass\": float}\n"
             "Правила:\n"
-            "1) Разделы/заголовки (например: \"1. Оборудование\", \"2. Материалы\") тоже возвращай отдельной строкой: "
+            "1) Разделы/заголовки (например: \"1. Оборудование\", \"B1\", \"Т3, Т4\") тоже возвращай отдельной строкой: "
             "\"name\"=текст раздела, \"quantity\"=0, \"unit\"=\"\", \"code\"=\"\", \"mass\"=0.\n"
             "2) Если количества нет — ставь 0.\n"
             "3) Никакого текста кроме JSON.\n"
+            "4) Игнорируй строки штампа/колонтитула (Изм., Лист, Подпись, Дата, Стадия и т.п.).\n"
         )
 
         if user_hint:
@@ -513,62 +514,14 @@ class AIService:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.0,
-                max_completion_tokens=4000
+                max_completion_tokens=8000
             )
             content = response.choices[0].message.content
-            data = json.loads(content)
-
-            if isinstance(data, dict):
-                for key in ("items", "specification", "data"):
-                    if key in data and isinstance(data[key], list):
-                        data = data[key]
-                        break
-
-            if not isinstance(data, list):
+            if not content:
                 return []
-
-            validated_results = []
-            for item in data:
-                if not isinstance(item, dict):
-                    continue
-
-                try:
-                    name_raw = str(item.get("name", "")).strip()
-                    code_raw = str(item.get("code", "")).strip()
-                    unit_raw = str(item.get("unit", "")).strip()
-
-                    qty_raw = item.get("quantity", 0.0)
-                    try:
-                        quantity = float(qty_raw)
-                    except Exception:
-                        quantity = 0.0
-
-                    mass_raw = item.get("mass", 0.0)
-                    try:
-                        mass = float(mass_raw)
-                    except Exception:
-                        mass = 0.0
-
-                    display_name = name_raw or code_raw
-                    if not display_name:
-                        continue
-
-                    if not re.search(r"[a-zA-Zа-яА-Я]", display_name):
-                        continue
-
-                    validated_results.append(
-                        {
-                            "name": display_name,
-                            "quantity": quantity,
-                            "unit": unit_raw,
-                            "code": code_raw,
-                            "mass": mass
-                        }
-                    )
-                except Exception:
-                    continue
-
-            return validated_results
+            result = self._parse_items_from_json(content)
+            print(f"parse_specification_from_image: {len(result)} items")
+            return result
         except OpenAIError as e:
             err_str = str(e)
             if "429" in err_str or "rate_limit" in err_str.lower() or "quota" in err_str.lower():
