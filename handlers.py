@@ -684,8 +684,10 @@ async def process_spec_excel(message: Message, state: FSMContext, bot: Bot):
 
     processing_msg = await message.answer("Получил Excel. Читаю данные... 📑")
 
-    excel_path = f"temp_spec_{message.document.file_id}.xlsx"
-    excel_filename = message.document.file_name or f"{message.document.file_unique_id}.xlsx"
+    is_xls = message.document.mime_type == "application/vnd.ms-excel"
+    ext = ".xls" if is_xls else ".xlsx"
+    excel_path = f"temp_spec_{message.document.file_id}{ext}"
+    excel_filename = message.document.file_name or f"{message.document.file_unique_id}{ext}"
 
     await bot.download(message.document, destination=excel_path)
 
