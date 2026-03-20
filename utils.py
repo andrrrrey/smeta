@@ -702,7 +702,7 @@ def parse_spec_excel_for_creation(file_path: str) -> List[Dict]:
     if not spec_items:
         raise ValueError("Файл Excel пуст, данные не найдены или структура таблицы некорректна.")
 
-    return _deduplicate_items(spec_items)
+    return spec_items
 
 
 async def _try_text_batch_extraction(
