@@ -684,8 +684,8 @@ async def process_spec_excel(message: Message, state: FSMContext, bot: Bot):
 
     processing_msg = await message.answer("Получил Excel. Читаю данные... 📑")
 
-    is_xls = message.document.mime_type == "application/vnd.ms-excel"
-    ext = ".xls" if is_xls else ".xlsx"
+    filename_lower = (message.document.file_name or "").lower()
+    ext = ".xls" if filename_lower.endswith(".xls") else ".xlsx"
     excel_path = f"temp_spec_{message.document.file_id}{ext}"
     excel_filename = message.document.file_name or f"{message.document.file_unique_id}{ext}"
 
@@ -737,6 +737,17 @@ async def process_spec_excel(message: Message, state: FSMContext, bot: Bot):
     finally:
         if os.path.exists(excel_path):
             os.remove(excel_path)
+
+
+@router.message(CalcState.awaiting_pdf, F.document)
+async def process_spec_document_fallback(message: Message, state: FSMContext, bot: Bot):
+    filename = message.document.file_name or ""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in (".xls", ".xlsx"):
+        await process_spec_excel(message, state, bot)
+    else:
+        await delete_user_message(message)
+        await send_temp_notification(message, "Пожалуйста, отправьте PDF или Excel (.xls/.xlsx) файл.")
 
 
 @router.message(CalcState.awaiting_pdf, F.photo)
