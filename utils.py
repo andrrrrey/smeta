@@ -1,5 +1,6 @@
 import asyncio
 import io
+import os
 import re
 import pdfplumber
 import pandas as pd
@@ -585,7 +586,14 @@ def parse_spec_excel_for_creation(file_path: str) -> List[Dict]:
     spec_items = []
 
     try:
-        xls_dict = pd.read_excel(file_path, sheet_name=None, header=None)
+        ext = os.path.splitext(file_path)[1].lower()
+        engine = "xlrd" if ext == ".xls" else "openpyxl"
+        xls_dict = pd.read_excel(file_path, sheet_name=None, header=None, engine=engine)
+    except ImportError:
+        raise ValueError(
+            "Формат .xls не поддерживается на сервере. "
+            "Пожалуйста, сохраните файл в формате .xlsx (Файл → Сохранить как → Excel Workbook .xlsx) и отправьте снова."
+        )
     except Exception as e:
         raise ValueError(f"Не удалось прочитать Excel файл: {e}")
 
