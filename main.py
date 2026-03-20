@@ -3,7 +3,6 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import ClientTimeout
 
 from config import load_config
 from db import init_db, async_session_factory, BotSettings
@@ -39,7 +38,7 @@ async def main():
     config = load_config()
 
     storage = MemoryStorage()
-    session = AiohttpSession(timeout=ClientTimeout(total=120, sock_read=90))
+    session = AiohttpSession(timeout=120)
     bot = Bot(token=config.bot.token, session=session)
     dp = Dispatcher(storage=storage)
 
