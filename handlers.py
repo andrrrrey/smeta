@@ -628,7 +628,7 @@ async def process_pdf(message: Message, state: FSMContext, bot: Bot):
                 f"Пожалуйста, уменьшите размер PDF и попробуйте снова."
             )
 
-        await bot.download(message.document, destination=pdf_path)
+        await bot.download(message.document, destination=pdf_path, timeout=120)
 
         with open(pdf_path, "rb") as f:
             pdf_bytes = f.read()
@@ -689,7 +689,7 @@ async def process_spec_excel(message: Message, state: FSMContext, bot: Bot):
     excel_path = f"temp_spec_{message.document.file_id}{ext}"
     excel_filename = message.document.file_name or f"{message.document.file_unique_id}{ext}"
 
-    await bot.download(message.document, destination=excel_path)
+    await bot.download(message.document, destination=excel_path, timeout=120)
 
     spec_items = []
     try:
@@ -758,7 +758,7 @@ async def process_image_upload(message: Message, state: FSMContext, bot: Bot):
     photo_file = message.photo[-1]
     file_path = f"temp_img_{photo_file.file_unique_id}.jpg"
 
-    await bot.download(photo_file, destination=file_path)
+    await bot.download(photo_file, destination=file_path, timeout=120)
 
     await state.update_data(current_image_path=file_path)
 
@@ -919,7 +919,7 @@ async def process_edit_command(message: Message, state: FSMContext, bot: Bot):
     if message.voice:
         processing_msg = await message.answer("Распознаю голосовую команду... 🎙️")
         voice_path = f"temp_voice_{message.voice.file_unique_id}.ogg"
-        await bot.download(message.voice, destination=voice_path)
+        await bot.download(message.voice, destination=voice_path, timeout=120)
 
         try:
             command_text = await ai_service_instance.transcribe_voice_command(voice_path)
@@ -1183,7 +1183,7 @@ async def process_excel_update(message: Message, state: FSMContext, bot: Bot):
     calc_id = data.get("current_calc_id")
 
     excel_path = f"temp_update_{message.document.file_id}.xlsx"
-    await bot.download(message.document, destination=excel_path)
+    await bot.download(message.document, destination=excel_path, timeout=120)
 
     try:
         updates = parse_excel_for_update(excel_path)
@@ -1798,7 +1798,7 @@ async def save_system_prompt_from_file(message: Message, state: FSMContext, bot:
 
     file_path = f"temp_prompt_{message.document.file_unique_id}.txt"
     try:
-        await bot.download(message.document, destination=file_path)
+        await bot.download(message.document, destination=file_path, timeout=120)
 
         with open(file_path, 'r', encoding='utf-8') as f:
             prompt_text = f.read()
@@ -2050,7 +2050,7 @@ async def process_rag_doc(message: Message, state: FSMContext, bot: Bot):
     processing_msg = await message.answer("Обработка документа... ⏳")
 
     file_path = f"temp_rag_{message.document.file_unique_id}"
-    await bot.download(message.document, destination=file_path)
+    await bot.download(message.document, destination=file_path, timeout=120)
 
     doc_text = ""
     try:
