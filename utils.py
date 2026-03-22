@@ -1,5 +1,6 @@
 import asyncio
 import io
+import math
 import os
 import re
 import pdfplumber
@@ -217,6 +218,59 @@ async def extract_specification_tables_streaming(
         yield (items or []), i + 1, total_to_process
 
 
+def calculate_m2_dimensions(name: str) -> Optional[float]:
+    """
+    Вычисляет «Размеры в м²» для воздуховодов и фасонных изделий.
+
+    Прямоугольный воздуховод:  2 × (A + B) / 1000       [м²/м]
+    Круглый воздуховод:        π × D / 1000               [м²/м]
+    Переход круглый:           π·(D+d)/2·√(((D-d)/2)²+H²) / 1 000 000  [м²/шт]
+      (если H не указан, берётся H = |D-d|/2 — угол ~45°)
+    Для отводов/тройников без конкретных формул → None (ручной ввод).
+    """
+    n = name.lower()
+
+    is_rect   = any(x in n for x in ['прямоугольн'])
+    is_round  = any(x in n for x in ['круглый', 'круглого', 'круглая', 'круглые', 'круглых', 'круглом'])
+    is_trans  = 'переход' in n
+    is_elbow  = 'отвод'   in n
+    is_tee    = 'тройник' in n
+
+    # ── Переход круглый ────────────────────────────────────────────────
+    if is_trans and (is_round or re.search(r'\d+\s*/\s*\d+', name)):
+        m = re.search(r'(\d+(?:[.,]\d+)?)\s*/\s*(\d+(?:[.,]\d+)?)', name)
+        if m:
+            D = float(m.group(1).replace(',', '.'))
+            d = float(m.group(2).replace(',', '.'))
+            h_m = re.search(r'[HhНн]\s*=?\s*(\d+(?:[.,]\d+)?)', name)
+            H = float(h_m.group(1).replace(',', '.')) if h_m else abs(D - d) / 2
+            slant = math.sqrt(((D - d) / 2) ** 2 + H ** 2)
+            return math.pi * (D + d) / 2 * slant / 1_000_000
+        return None
+
+    # ── Прямоугольный воздуховод ───────────────────────────────────────
+    if is_rect and not is_trans and not is_elbow and not is_tee:
+        m = re.search(r'(\d+)\s*[хxX×*]\s*(\d+)', name)
+        if m:
+            A, B = float(m.group(1)), float(m.group(2))
+            return 2 * (A + B) / 1000
+        return None
+
+    # ── Круглый воздуховод (шт единица не важна, считаем м²/м) ────────
+    if not is_trans and not is_tee:
+        # пробуем распознать диаметр: Ø315, D315, d315, 315мм
+        # Ø/ø first, then word-boundary D/d, then «NNN мм», then bare number
+        dm = (re.search(r'[Øø]\s*(\d+)', name)
+              or re.search(r'\bD\s*(\d+)', name, re.IGNORECASE)
+              or re.search(r'(\d+)\s*мм', name, re.IGNORECASE)
+              or re.search(r'\b(\d{3,4})\b', name))
+        if dm:
+            D = float(dm.group(1))
+            if 50 <= D <= 2000:
+                return math.pi * D / 1000
+    return None
+
+
 def create_calculation_excel(items: List[CalculationItem], total: float,
                              consumable_words: List[str] = None) -> io.BytesIO:
     """
@@ -226,7 +280,7 @@ def create_calculation_excel(items: List[CalculationItem], total: float,
     I: СТОИМОСТЬ МАТЕРИАЛОВ | J: СТОИМОСТЬ РАБОТ | K: ОБЩАЯ СТОИМОСТЬ
     """
     consumables_set = set(w.lower() for w in (consumable_words or []))
-    LAST_COL = 10  # column K (0-indexed)
+    LAST_COL = 12  # column M (0-indexed), after adding 2 m² columns
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -279,17 +333,19 @@ def create_calculation_excel(items: List[CalculationItem], total: float,
                             border=1, font_size=10)
 
         # ── Column widths ─────────────────────────────────────────────
-        worksheet.set_column(0, 0, 6)   # A: №П/П
-        worksheet.set_column(1, 1, 45)  # B: Наименование
-        worksheet.set_column(2, 2, 20)  # C: Тип, марка
-        worksheet.set_column(3, 3, 14)  # D: Производитель
-        worksheet.set_column(4, 4, 8)   # E: Ед. изм.
-        worksheet.set_column(5, 5, 8)   # F: Кол-во
-        worksheet.set_column(6, 6, 12)  # G: Цена материалов
-        worksheet.set_column(7, 7, 12)  # H: Цена работ
-        worksheet.set_column(8, 8, 14)  # I: Стоимость материалов
-        worksheet.set_column(9, 9, 14)  # J: Стоимость работ
-        worksheet.set_column(10, 10, 16) # K: Общая стоимость
+        worksheet.set_column(0, 0, 6)    # A: №П/П
+        worksheet.set_column(1, 1, 45)   # B: Наименование
+        worksheet.set_column(2, 2, 20)   # C: Тип, марка
+        worksheet.set_column(3, 3, 14)   # D: Производитель
+        worksheet.set_column(4, 4, 8)    # E: Ед. изм.
+        worksheet.set_column(5, 5, 8)    # F: Кол-во
+        worksheet.set_column(6, 6, 12)   # G: Размеры в м²
+        worksheet.set_column(7, 7, 12)   # H: Площадь, м²
+        worksheet.set_column(8, 8, 12)   # I: Цена материалов
+        worksheet.set_column(9, 9, 12)   # J: Цена работ
+        worksheet.set_column(10, 10, 14) # K: Стоимость материалов
+        worksheet.set_column(11, 11, 14) # L: Стоимость работ
+        worksheet.set_column(12, 12, 16) # M: Общая стоимость
 
         r = 0  # current row (0-indexed)
 
@@ -313,24 +369,22 @@ def create_calculation_excel(items: List[CalculationItem], total: float,
         worksheet.write(r, 3, 'ПРОИЗВОДИТЕЛЬ', th_fmt)
         worksheet.write(r, 4, 'ЕДИНИЦА\nИЗМЕРЕНИЯ', th_fmt)
         worksheet.write(r, 5, 'КОЛ-ВО', th_fmt)
-        worksheet.merge_range(r, 6, r, 7, 'ЦЕНА ЗА ЕДИНИЦУ', th_fmt)
-        worksheet.merge_range(r, 8, r, 9, 'СТОИМОСТЬ', th_fmt)
-        worksheet.write(r, 10, 'ОБЩАЯ\nСТОИМОСТЬ,\nруб.', th_fmt)
+        worksheet.write(r, 6, 'РАЗМЕРЫ\nВ М²', th_fmt)
+        worksheet.write(r, 7, 'ПЛОЩАДЬ,\nМ²', th_fmt)
+        worksheet.merge_range(r, 8, r, 9, 'ЦЕНА ЗА ЕДИНИЦУ', th_fmt)
+        worksheet.merge_range(r, 10, r, 11, 'СТОИМОСТЬ', th_fmt)
+        worksheet.write(r, 12, 'ОБЩАЯ\nСТОИМОСТЬ,\nруб.', th_fmt)
         worksheet.set_row(r, 36)
         r += 1
 
         # Row 2 of header (sub-headers for merged price/cost columns)
-        worksheet.write(r, 0, '', th_sub_fmt)
-        worksheet.write(r, 1, '', th_sub_fmt)
-        worksheet.write(r, 2, '', th_sub_fmt)
-        worksheet.write(r, 3, '', th_sub_fmt)
-        worksheet.write(r, 4, '', th_sub_fmt)
-        worksheet.write(r, 5, '', th_sub_fmt)
-        worksheet.write(r, 6, 'МАТЕРИАЛОВ', th_sub_fmt)
-        worksheet.write(r, 7, 'РАБОТ', th_sub_fmt)
-        worksheet.write(r, 8, 'МАТЕРИАЛОВ', th_sub_fmt)
-        worksheet.write(r, 9, 'РАБОТ', th_sub_fmt)
-        worksheet.write(r, 10, '', th_sub_fmt)
+        for col in range(8):
+            worksheet.write(r, col, '', th_sub_fmt)
+        worksheet.write(r, 8,  'МАТЕРИАЛОВ', th_sub_fmt)
+        worksheet.write(r, 9,  'РАБОТ',      th_sub_fmt)
+        worksheet.write(r, 10, 'МАТЕРИАЛОВ', th_sub_fmt)
+        worksheet.write(r, 11, 'РАБОТ',      th_sub_fmt)
+        worksheet.write(r, 12, '',            th_sub_fmt)
         worksheet.set_row(r, 18)
         r += 1
 
@@ -391,19 +445,34 @@ def create_calculation_excel(items: List[CalculationItem], total: float,
                     else:
                         row_num_fmt = num_fmt
 
+                # m² calculation
+                m2_dims = calculate_m2_dimensions(item.name)
+                xl_row = r + 1  # 1-indexed for Excel formulas
+
+                m2_fmt = fmt(num_format='#,##0.0000', valign='top', border=1, font_size=9,
+                             align='center')
+
                 worksheet.write(r, 0, position_counter, center_fmt)
                 worksheet.write(r, 1, item.name, row_name_fmt)
                 worksheet.write(r, 2, item.code or '', cell_fmt)
-                worksheet.write(r, 3, '', cell_fmt)  # Производитель (blank)
+                worksheet.write(r, 3, '', cell_fmt)        # Производитель (blank)
                 worksheet.write(r, 4, item.unit, center_fmt)
                 worksheet.write(r, 5, qty, center_fmt)
-                worksheet.write(r, 6, price_mat, row_num_fmt)
-                worksheet.write(r, 7, price_work, row_num_fmt)
-                # Formulas: col I = F*G, col J = F*H, col K = I+J
-                xl_row = r + 1  # 1-indexed for Excel formulas
-                worksheet.write_formula(r, 8, f'=F{xl_row}*G{xl_row}', row_num_fmt)
-                worksheet.write_formula(r, 9, f'=F{xl_row}*H{xl_row}', row_num_fmt)
-                worksheet.write_formula(r, 10, f'=I{xl_row}+J{xl_row}', row_num_fmt)
+                # G: Размеры в м² (value or blank)
+                if m2_dims is not None:
+                    worksheet.write(r, 6, round(m2_dims, 4), m2_fmt)
+                    worksheet.write_formula(r, 7,
+                        f'=G{xl_row}*F{xl_row}', m2_fmt)
+                else:
+                    worksheet.write(r, 6, '', cell_fmt)
+                    worksheet.write(r, 7, '', cell_fmt)
+                # I: Цена материалов, J: Цена работ
+                worksheet.write(r, 8,  price_mat,  row_num_fmt)
+                worksheet.write(r, 9,  price_work, row_num_fmt)
+                # K = F*I, L = F*J, M = K+L
+                worksheet.write_formula(r, 10, f'=F{xl_row}*I{xl_row}', row_num_fmt)
+                worksheet.write_formula(r, 11, f'=F{xl_row}*J{xl_row}', row_num_fmt)
+                worksheet.write_formula(r, 12, f'=K{xl_row}+L{xl_row}', row_num_fmt)
                 worksheet.set_row(r, 30)
                 r += 1
                 position_counter += 1
@@ -412,40 +481,40 @@ def create_calculation_excel(items: List[CalculationItem], total: float,
 
             # Section subtotal row
             if sec_items:
-                i_range = f'I{sec_data_start + 1}:I{sec_data_end + 1}'
-                j_range = f'J{sec_data_start + 1}:J{sec_data_end + 1}'
                 k_range = f'K{sec_data_start + 1}:K{sec_data_end + 1}'
-                worksheet.merge_range(r, 0, r, 7,
+                l_range = f'L{sec_data_start + 1}:L{sec_data_end + 1}'
+                m_range = f'M{sec_data_start + 1}:M{sec_data_end + 1}'
+                worksheet.merge_range(r, 0, r, 9,
                                       f'ИТОГО по разделу {sec_name}:', sub_total_label_fmt)
-                worksheet.write_formula(r, 8, f'=SUM({i_range})', sub_total_val_fmt)
-                worksheet.write_formula(r, 9, f'=SUM({j_range})', sub_total_val_fmt)
                 worksheet.write_formula(r, 10, f'=SUM({k_range})', sub_total_val_fmt)
+                worksheet.write_formula(r, 11, f'=SUM({l_range})', sub_total_val_fmt)
+                worksheet.write_formula(r, 12, f'=SUM({m_range})', sub_total_val_fmt)
                 section_total_rows.append(r)
                 worksheet.set_row(r, 16)
                 r += 1
 
         # ── ИТОГО ПО ВСЕМ РАЗДЕЛАМ ───────────────────────────────────
-        worksheet.merge_range(r, 0, r, 7, 'ИТОГО ПО ВСЕМ РАЗДЕЛАМ:', grand_total_label_fmt)
+        worksheet.merge_range(r, 0, r, 9, 'ИТОГО ПО ВСЕМ РАЗДЕЛАМ:', grand_total_label_fmt)
         if section_total_rows:
-            i_refs = '+'.join(f'I{sr + 1}' for sr in section_total_rows)
-            j_refs = '+'.join(f'J{sr + 1}' for sr in section_total_rows)
             k_refs = '+'.join(f'K{sr + 1}' for sr in section_total_rows)
+            l_refs = '+'.join(f'L{sr + 1}' for sr in section_total_rows)
+            m_refs = '+'.join(f'M{sr + 1}' for sr in section_total_rows)
         else:
-            i_refs = f'SUM(I{data_start_row + 1}:I{r})'
-            j_refs = f'SUM(J{data_start_row + 1}:J{r})'
             k_refs = f'SUM(K{data_start_row + 1}:K{r})'
-        worksheet.write_formula(r, 8, f'={i_refs}', grand_total_val_fmt)
-        worksheet.write_formula(r, 9, f'={j_refs}', grand_total_val_fmt)
+            l_refs = f'SUM(L{data_start_row + 1}:L{r})'
+            m_refs = f'SUM(M{data_start_row + 1}:M{r})'
         worksheet.write_formula(r, 10, f'={k_refs}', grand_total_val_fmt)
+        worksheet.write_formula(r, 11, f'={l_refs}', grand_total_val_fmt)
+        worksheet.write_formula(r, 12, f'={m_refs}', grand_total_val_fmt)
         grand_total_row = r
         worksheet.set_row(r, 18)
         r += 1
 
         # ── в т.ч. НДС 20% ───────────────────────────────────────────
-        worksheet.merge_range(r, 0, r, 7, 'в т.ч. НДС 20%:', vat_label_fmt)
-        worksheet.write_formula(r, 8, f'=I{grand_total_row + 1}*0.2', vat_fmt)
-        worksheet.write_formula(r, 9, f'=J{grand_total_row + 1}*0.2', vat_fmt)
+        worksheet.merge_range(r, 0, r, 9, 'в т.ч. НДС 20%:', vat_label_fmt)
         worksheet.write_formula(r, 10, f'=K{grand_total_row + 1}*0.2', vat_fmt)
+        worksheet.write_formula(r, 11, f'=L{grand_total_row + 1}*0.2', vat_fmt)
+        worksheet.write_formula(r, 12, f'=M{grand_total_row + 1}*0.2', vat_fmt)
         worksheet.set_row(r, 18)
 
     output.seek(0)
