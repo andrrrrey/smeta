@@ -218,26 +218,61 @@ async def extract_specification_tables_streaming(
         yield (items or []), i + 1, total_to_process
 
 
-def calculate_m2_dimensions(name: str) -> Optional[float]:
+def calculate_m2_dimensions(name: str, unit: str = '') -> Optional[float]:
     """
-    Вычисляет «Размеры в м²» для воздуховодов и фасонных изделий.
+    Вычисляет «Размеры в м²» только для воздуховодов и фасонных изделий к ним.
 
-    Прямоугольный воздуховод:  2 × (A + B) / 1000       [м²/м]
-    Круглый воздуховод:        π × D / 1000               [м²/м]
-    Переход круглый:           π·(D+d)/2·√(((D-d)/2)²+H²) / 1 000 000  [м²/шт]
-      (если H не указан, берётся H = |D-d|/2 — угол ~45°)
-    Для отводов/тройников без конкретных формул → None (ручной ввод).
+    Считаем:
+      Прямоугольный воздуховод/отвод:  2 × (A + B) / 1000  [м²/м]
+      Круглый воздуховод/отвод:        π × D / 1000         [м²/м]
+      Переход круглый:  π·(D+d)/2·√(((D-d)/2)²+H²) / 10⁶  [м²/шт]
+        (если H не указан → H = |D-d|/2, угол ~45°)
+      Тройники, врезки, переходы без D/d → None (ручной ввод)
+
+    Не считаем:
+      • Если единица уже м² / m² / кв.м
+      • Изоляция, люки, решётки, анемостаты и всё, что не воздуховод/фасонное
     """
+    # ── 1. Уже в м²? ──────────────────────────────────────────────────
+    u = unit.strip().lower()
+    u_norm = u.replace('²', '2').replace('\u00b2', '2')
+    if any(s in u_norm for s in ('м2', 'm2', 'кв.м', 'кв м')):
+        return None
+
     n = name.lower()
 
-    is_rect   = any(x in n for x in ['прямоугольн'])
-    is_round  = any(x in n for x in ['круглый', 'круглого', 'круглая', 'круглые', 'круглых', 'круглом'])
-    is_trans  = 'переход' in n
-    is_elbow  = 'отвод'   in n
-    is_tee    = 'тройник' in n
+    # ── 2. Не воздуховод и не фасонное изделие? ───────────────────────
+    _duct_kw    = ('воздуховод',)
+    _fitting_kw = ('отвод', 'переход', 'тройник', 'врезка', 'фасонн')
+    is_ductwork = any(k in n for k in _duct_kw + _fitting_kw)
+    if not is_ductwork:
+        return None
 
-    # ── Переход круглый ────────────────────────────────────────────────
-    if is_trans and (is_round or re.search(r'\d+\s*/\s*\d+', name)):
+    # ── 3. Исключения (не переводим) ──────────────────────────────────
+    _exclude_kw = (
+        'изол',       # изоляция
+        'люк',        # люки
+        'решетк', 'решётк',  # решётки
+        'анемостат',
+        'диффузор',
+        'клапан',
+        'фильтр',
+        'вентилятор',
+        'шумоглушит',  # шумоглушитель
+        'гибкая вставк', 'гибкий воздуховод',  # гибкие
+    )
+    if any(k in n for k in _exclude_kw):
+        return None
+
+    is_rect    = 'прямоугольн' in n
+    is_round   = any(x in n for x in ('круглый', 'круглого', 'круглая',
+                                       'круглые', 'круглых', 'круглом'))
+    is_reducer = 'переход' in n
+    is_tee     = 'тройник' in n
+    is_branch  = 'врезка'  in n
+
+    # ── 4. Переход (круглый или с размерами D1/D2) ─────────────────────
+    if is_reducer:
         m = re.search(r'(\d+(?:[.,]\d+)?)\s*/\s*(\d+(?:[.,]\d+)?)', name)
         if m:
             D = float(m.group(1).replace(',', '.'))
@@ -246,28 +281,29 @@ def calculate_m2_dimensions(name: str) -> Optional[float]:
             H = float(h_m.group(1).replace(',', '.')) if h_m else abs(D - d) / 2
             slant = math.sqrt(((D - d) / 2) ** 2 + H ** 2)
             return math.pi * (D + d) / 2 * slant / 1_000_000
+        return None  # размеры не распознаны → ручной ввод
+
+    # ── 5. Тройник / врезка — формулы не заданы → ручной ввод ─────────
+    if is_tee or is_branch:
         return None
 
-    # ── Прямоугольный воздуховод ───────────────────────────────────────
-    if is_rect and not is_trans and not is_elbow and not is_tee:
+    # ── 6. Прямоугольный воздуховод / отвод ────────────────────────────
+    if is_rect:
         m = re.search(r'(\d+)\s*[хxX×*]\s*(\d+)', name)
         if m:
             A, B = float(m.group(1)), float(m.group(2))
             return 2 * (A + B) / 1000
         return None
 
-    # ── Круглый воздуховод (шт единица не важна, считаем м²/м) ────────
-    if not is_trans and not is_tee:
-        # пробуем распознать диаметр: Ø315, D315, d315, 315мм
-        # Ø/ø first, then word-boundary D/d, then «NNN мм», then bare number
-        dm = (re.search(r'[Øø]\s*(\d+)', name)
-              or re.search(r'\bD\s*(\d+)', name, re.IGNORECASE)
-              or re.search(r'(\d+)\s*мм', name, re.IGNORECASE)
-              or re.search(r'\b(\d{3,4})\b', name))
-        if dm:
-            D = float(dm.group(1))
-            if 50 <= D <= 2000:
-                return math.pi * D / 1000
+    # ── 7. Круглый воздуховод / отвод ──────────────────────────────────
+    dm = (re.search(r'[Øø]\s*(\d+)', name)
+          or re.search(r'\bD\s*(\d+)', name, re.IGNORECASE)
+          or re.search(r'(\d+)\s*мм', name, re.IGNORECASE)
+          or re.search(r'\b(\d{3,4})\b', name))
+    if dm:
+        D = float(dm.group(1))
+        if 50 <= D <= 2000:
+            return math.pi * D / 1000
     return None
 
 
@@ -446,7 +482,7 @@ def create_calculation_excel(items: List[CalculationItem], total: float,
                         row_num_fmt = num_fmt
 
                 # m² calculation
-                m2_dims = calculate_m2_dimensions(item.name)
+                m2_dims = calculate_m2_dimensions(item.name, item.unit or '')
                 xl_row = r + 1  # 1-indexed for Excel formulas
 
                 m2_fmt = fmt(num_format='#,##0.0000', valign='top', border=1, font_size=9,
