@@ -218,92 +218,221 @@ async def extract_specification_tables_streaming(
         yield (items or []), i + 1, total_to_process
 
 
+def _parse_diameter(name: str) -> Optional[float]:
+    """Извлечь диаметр из названия (результат в мм)."""
+    m = (re.search(r'[Øø]\s*(\d+(?:[.,]\d+)?)', name)
+         or re.search(r'\bD\s*(\d+(?:[.,]\d+)?)', name, re.IGNORECASE)
+         or re.search(r'(\d+(?:[.,]\d+)?)\s*мм', name, re.IGNORECASE)
+         or re.search(r'\b(\d{3,4})\b', name))
+    if m:
+        val = float(m.group(1).replace(',', '.'))
+        if 50 <= val <= 2000:
+            return val
+    return None
+
+
+def _parse_rect_dims(name: str) -> Optional[tuple]:
+    """Извлечь размеры прямоугольного сечения AxB (результат в мм)."""
+    m = re.search(r'(\d+)\s*[хxX×*]\s*(\d+)', name)
+    if m:
+        return float(m.group(1)), float(m.group(2))
+    return None
+
+
+def _parse_angle(name: str) -> float:
+    """Извлечь угол в градусах; по умолчанию 90."""
+    m = re.search(r'(\d+)\s*°', name)
+    if m:
+        val = float(m.group(1))
+        if 1 <= val <= 180:
+            return val
+    return 90.0
+
+
+def _parse_length_mm(name: str) -> Optional[float]:
+    """Извлечь длину/высоту L из названия (результат в мм)."""
+    # «L=3000», «L=3м», «L=3000мм», «H=300», «Н=300»
+    m = re.search(r'[LlHhЛлHhНн]\s*=\s*(\d+(?:[.,]\d+)?)\s*(м|мм|mm)?',
+                  name, re.IGNORECASE)
+    if m:
+        val = float(m.group(1).replace(',', '.'))
+        sfx = (m.group(2) or '').lower().strip()
+        if sfx in ('м', 'm') or (not sfx and val <= 30):
+            return val * 1000      # метры → мм
+        return val                 # уже мм
+    return None
+
+
+def _is_linear_unit(unit: str) -> bool:
+    """Единица измерения — погонные метры?"""
+    u = unit.strip().lower()
+    return bool(re.match(
+        r'^(м|м\.п\.?|мп|пог\.?\s*м?|п\.?\s*м\.?|л\.?\s*м\.?|mp|lm|lin\.?\s*m)$', u
+    ))
+
+
 def calculate_m2_dimensions(name: str, unit: str = '') -> Optional[float]:
     """
-    Вычисляет «Размеры в м²» только для воздуховодов и фасонных изделий к ним.
+    Вычисляет «Размеры в м²» (площадь одной единицы) для воздуховодов и
+    фасонных изделий к ним.
 
-    Считаем:
-      Прямоугольный воздуховод/отвод:  2 × (A + B) / 1000  [м²/м]
-      Круглый воздуховод/отвод:        π × D / 1000         [м²/м]
-      Переход круглый:  π·(D+d)/2·√(((D-d)/2)²+H²) / 10⁶  [м²/шт]
-        (если H не указан → H = |D-d|/2, угол ~45°)
-      Тройники, врезки, переходы без D/d → None (ручной ввод)
+    Если единица уже м²/m² — возвращает None (перевод не нужен).
+    Если позиция не воздуховод/фасонное или входит в список исключений — None.
 
-    Не считаем:
-      • Если единица уже м² / m² / кв.м
-      • Изоляция, люки, решётки, анемостаты и всё, что не воздуховод/фасонное
+    Прямые участки (unit=м → L=1 м; unit=шт → L берётся из названия):
+      Круглый:        π × D × L / 1 000 000  [м²]
+      Прямоугольный:  2 × (A+B) × L / 1 000 000  [м²]
+
+    Отводы (всегда шт, α=90° по умолч., R=1.5D или max(A,B) по СП):
+      Круглый:        π × D × (R × α × π/180) / 1 000 000
+      Прямоугольный:  (A+B) × (R × α × π/180) / 1 000 000
+
+    Переходы:
+      Круглый D1→D2:      π × (D1+D2) × L / (2 × 1 000 000),
+                          L = |D1-D2| / 2 если не указан
+      Прямоугольный:      [(A1+B1)+(A2+B2)] × L / (2 × 1 000 000)
+      Кругло-прямоугольный: [π×D + (A+B)] × L / (2 × 1 000 000)
+
+    Тройники, врезки → None (ручной ввод, формулы требуют доп. данных)
     """
     # ── 1. Уже в м²? ──────────────────────────────────────────────────
-    u = unit.strip().lower()
-    u_norm = u.replace('²', '2').replace('\u00b2', '2')
+    u_norm = unit.strip().lower().replace('²', '2').replace('\u00b2', '2')
     if any(s in u_norm for s in ('м2', 'm2', 'кв.м', 'кв м')):
         return None
 
     n = name.lower()
 
-    # ── 2. Не воздуховод и не фасонное изделие? ───────────────────────
+    # ── 2. Только воздуховоды и фасонные изделия ──────────────────────
     _duct_kw    = ('воздуховод',)
-    _fitting_kw = ('отвод', 'переход', 'тройник', 'врезка', 'фасонн')
-    is_ductwork = any(k in n for k in _duct_kw + _fitting_kw)
-    if not is_ductwork:
+    _fitting_kw = ('отвод', 'переход', 'тройник', 'врезка', 'фасонн', 'утка', 'утки')
+    if not any(k in n for k in _duct_kw + _fitting_kw):
         return None
 
-    # ── 3. Исключения (не переводим) ──────────────────────────────────
+    # ── 3. Исключения ─────────────────────────────────────────────────
     _exclude_kw = (
-        'изол',       # изоляция
-        'люк',        # люки
-        'решетк', 'решётк',  # решётки
-        'анемостат',
-        'диффузор',
-        'клапан',
-        'фильтр',
-        'вентилятор',
-        'шумоглушит',  # шумоглушитель
-        'гибкая вставк', 'гибкий воздуховод',  # гибкие
+        'изол', 'люк', 'решетк', 'решётк', 'анемостат', 'диффузор',
+        'клапан', 'фильтр', 'вентилятор', 'шумоглушит',
+        'гибкая вставк', 'гибкий воздуховод',
     )
     if any(k in n for k in _exclude_kw):
         return None
 
+    # ── Флаги типа ────────────────────────────────────────────────────
     is_rect    = 'прямоугольн' in n
-    is_round   = any(x in n for x in ('круглый', 'круглого', 'круглая',
-                                       'круглые', 'круглых', 'круглом'))
     is_reducer = 'переход' in n
+    is_elbow   = 'отвод'   in n
     is_tee     = 'тройник' in n
     is_branch  = 'врезка'  in n
+    is_duck    = 'утк'     in n        # утка/утки (смещение)
+    is_duct    = 'воздуховод' in n and not (is_elbow or is_reducer or is_tee or is_branch or is_duck)
 
-    # ── 4. Переход (круглый или с размерами D1/D2) ─────────────────────
+    # ── 4. Прямые участки воздуховодов ────────────────────────────────
+    if is_duct:
+        linear = _is_linear_unit(unit)
+        L_mm = 1000.0 if linear else _parse_length_mm(name)
+        if L_mm is None:
+            return None  # длина неизвестна → ручной ввод
+
+        if is_rect:
+            dims = _parse_rect_dims(name)
+            if dims:
+                A, B = dims
+                return 2 * (A + B) * L_mm / 1_000_000
+            return None
+        else:
+            D = _parse_diameter(name)
+            if D:
+                return math.pi * D * L_mm / 1_000_000
+            return None
+
+    # ── 5. Отводы ─────────────────────────────────────────────────────
+    if is_elbow:
+        alpha = _parse_angle(name)
+        arc_factor = alpha * math.pi / 180   # безразмерный
+
+        if is_rect:
+            dims = _parse_rect_dims(name)
+            if dims:
+                A, B = dims
+                R = max(A, B)                # R ≥ max(a,b) по СП
+                L_arc = R * arc_factor       # мм
+                return (A + B) * L_arc / 1_000_000
+            return None
+        else:
+            D = _parse_diameter(name)
+            if D:
+                R = 1.5 * D                  # R ≥ 1.5D по СП
+                L_arc = R * arc_factor       # мм
+                return math.pi * D * L_arc / 1_000_000
+            return None
+
+    # ── 6. Переходы ───────────────────────────────────────────────────
     if is_reducer:
-        m = re.search(r'(\d+(?:[.,]\d+)?)\s*/\s*(\d+(?:[.,]\d+)?)', name)
-        if m:
-            D = float(m.group(1).replace(',', '.'))
-            d = float(m.group(2).replace(',', '.'))
-            h_m = re.search(r'[HhНн]\s*=?\s*(\d+(?:[.,]\d+)?)', name)
-            H = float(h_m.group(1).replace(',', '.')) if h_m else abs(D - d) / 2
-            slant = math.sqrt(((D - d) / 2) ** 2 + H ** 2)
-            return math.pi * (D + d) / 2 * slant / 1_000_000
+        L_mm = _parse_length_mm(name)
+        rect_pairs = re.findall(r'(\d+)\s*[хxX×*]\s*(\d+)', name)
+        # D1/D2 — только если нет «х» рядом со слешем (не прямоугольные)
+        d_match = re.search(
+            r'(?<![хxX×*\d])\b(\d+(?:[.,]\d+)?)\s*/\s*(\d+(?:[.,]\d+)?)\b(?!\s*[хxX×*])',
+            name)
+
+        # ── Прямоугольный переход A1xB1 / A2xB2 (два AxB в названии) ──
+        if len(rect_pairs) >= 2:
+            A1, B1 = float(rect_pairs[0][0]), float(rect_pairs[0][1])
+            A2, B2 = float(rect_pairs[1][0]), float(rect_pairs[1][1])
+            if L_mm is None:
+                diff = max(abs(A1 - A2), abs(B1 - B2))
+                L_mm = diff * 0.3 if diff > 0 else (A1 + B1) * 0.5
+            return ((A1 + B1) + (A2 + B2)) * L_mm / 2_000_000
+
+        circ_match = _parse_diameter(name)
+
+        # ── Кругло-прямоугольный: есть и AxB, и диаметр ────────────────
+        if rect_pairs and circ_match:
+            A, B = float(rect_pairs[0][0]), float(rect_pairs[0][1])
+            D = circ_match
+            if L_mm is None:
+                L_mm = max(D, (A + B) / 2) * 1.5
+            return (math.pi * D + (A + B)) * L_mm / 2_000_000
+
+        # ── Круглый переход D1/D2 ───────────────────────────────────────
+        if d_match:
+            D1 = float(d_match.group(1).replace(',', '.'))
+            D2 = float(d_match.group(2).replace(',', '.'))
+            if L_mm is None:
+                L_mm = abs(D1 - D2) / 2     # минимум по СП
+            return math.pi * (D1 + D2) * L_mm / 2_000_000
+
         return None  # размеры не распознаны → ручной ввод
 
-    # ── 5. Тройник / врезка — формулы не заданы → ручной ввод ─────────
+    # ── 7. Тройники / врезки — ручной ввод ────────────────────────────
     if is_tee or is_branch:
         return None
 
-    # ── 6. Прямоугольный воздуховод / отвод ────────────────────────────
-    if is_rect:
-        m = re.search(r'(\d+)\s*[хxX×*]\s*(\d+)', name)
-        if m:
-            A, B = float(m.group(1)), float(m.group(2))
-            return 2 * (A + B) / 1000
-        return None
+    # ── 8. Утки (смещения) ────────────────────────────────────────────
+    if is_duck:
+        L_mm = _parse_length_mm(name)
+        # Смещение C: «C=300», «с=300», «смещ=300»
+        c_m = re.search(r'[Сс]\s*=\s*(\d+(?:[.,]\d+)?)', name)
+        C_mm = float(c_m.group(1).replace(',', '.')) if c_m else None
+        if L_mm and C_mm:
+            delta = math.sqrt(L_mm ** 2 + C_mm ** 2)
+        elif L_mm:
+            delta = L_mm
+        else:
+            return None
 
-    # ── 7. Круглый воздуховод / отвод ──────────────────────────────────
-    dm = (re.search(r'[Øø]\s*(\d+)', name)
-          or re.search(r'\bD\s*(\d+)', name, re.IGNORECASE)
-          or re.search(r'(\d+)\s*мм', name, re.IGNORECASE)
-          or re.search(r'\b(\d{3,4})\b', name))
-    if dm:
-        D = float(dm.group(1))
-        if 50 <= D <= 2000:
-            return math.pi * D / 1000
+        if is_rect:
+            dims = _parse_rect_dims(name)
+            if dims:
+                A, B = dims
+                return (A + B) * delta / 1_000_000
+            return None
+        else:
+            D = _parse_diameter(name)
+            if D:
+                return math.pi * D * delta / 1_000_000
+            return None
+
     return None
 
 
