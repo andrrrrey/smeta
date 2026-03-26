@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+*.sqlite
+*.db
+chroma_db/
+temp_*.pdf
+temp_*.xlsx
+temp_*.xls
