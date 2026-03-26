@@ -636,6 +636,8 @@
     pollTimer = setInterval(async () => {
       try {
         const r = await fetch(`/api/job/${jobId}`);
+        // 504/502 = server busy with calculation — just keep polling
+        if (r.status === 504 || r.status === 502 || r.status === 503) return;
         if (!r.ok) return;
         const d = await r.json();
         updateProgress(d);
