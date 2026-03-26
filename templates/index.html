@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>СМЕТА — Расчёт спецификаций</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --blue:    #1976D2;
+      --blue-lt: #E3F2FD;
+      --green:   #388E3C;
+      --green-lt:#C8E6C9;
+      --yellow:  #F9A825;
+      --yellow-lt:#FFF9C4;
+      --red:     #C62828;
+      --red-lt:  #FFCDD2;
+      --orange:  #E65100;
+      --orange-lt:#FFE0B2;
+      --grey:    #607D8B;
+      --grey-lt: #ECEFF1;
+      --bg:      #F5F7FA;
+      --card:    #FFFFFF;
+      --text:    #212121;
+      --sub:     #546E7A;
+      --radius:  10px;
+      --shadow:  0 2px 12px rgba(0,0,0,.10);
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    header {
+      background: var(--blue);
+      color: #fff;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.18);
+    }
+    header h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: .02em; }
+    header span { font-size: .95rem; opacity: .85; }
+
+    main {
+      max-width: 1080px;
+      margin: 32px auto;
+      padding: 0 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .card {
+      background: var(--card);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 28px 32px;
+    }
+
+    h2 { font-size: 1.1rem; color: var(--sub); margin-bottom: 18px; font-weight: 600; }
+
+    /* ── Upload zone ── */
+    #drop-zone {
+      border: 2px dashed #90A4AE;
+      border-radius: var(--radius);
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+    }
+    #drop-zone:hover, #drop-zone.drag-over {
+      border-color: var(--blue);
+      background: var(--blue-lt);
+    }
+    #drop-zone .icon { font-size: 3rem; display: block; margin-bottom: 12px; }
+    #drop-zone p { color: var(--sub); line-height: 1.6; }
+    #drop-zone p strong { color: var(--blue); }
+    #file-input { display: none; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 10px 22px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      font-size: .95rem;
+      font-weight: 600;
+      transition: filter .15s, opacity .15s;
+    }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn:not(:disabled):hover { filter: brightness(1.08); }
+    .btn-primary   { background: var(--blue);   color: #fff; }
+    .btn-success   { background: var(--green);  color: #fff; }
+    .btn-secondary { background: var(--grey-lt); color: var(--text); }
+
+    /* ── Progress ── */
+    #progress-section { display: none; }
+    .progress-bar-wrap {
+      background: var(--grey-lt);
+      border-radius: 99px;
+      height: 14px;
+      overflow: hidden;
+      margin: 12px 0 6px;
+    }
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--blue) 0%, #42A5F5 100%);
+      border-radius: 99px;
+      width: 0%;
+      transition: width .4s ease;
+    }
+    #progress-label { color: var(--sub); font-size: .88rem; }
+    .spinner {
+      display: inline-block;
+      width: 18px; height: 18px;
+      border: 3px solid #B0BEC5;
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Error ── */
+    #error-section {
+      display: none;
+      background: var(--red-lt);
+      border-left: 4px solid var(--red);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      color: var(--red);
+    }
+
+    /* ── Results ── */
+    #results-section { display: none; }
+
+    .results-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 20px;
+      align-items: center;
+    }
+    .meta-badge {
+      background: var(--blue-lt);
+      color: var(--blue);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: .9rem;
+      font-weight: 600;
+    }
+    .total-badge {
+      background: var(--green-lt);
+      color: var(--green);
+      font-size: 1.05rem;
+    }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+    /* ── Table ── */
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .88rem;
+    }
+    th {
+      background: #1565C0;
+      color: #fff;
+      padding: 9px 10px;
+      text-align: center;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    td {
+      border: 1px solid #CFD8DC;
+      padding: 7px 10px;
+      vertical-align: top;
+    }
+    tr:hover td { filter: brightness(.97); }
+
+    /* source colours */
+    tr.src-section   td { background: var(--orange-lt); font-weight: 700; }
+    tr.src-price_list td.price-col { background: var(--green-lt); }
+    tr.src-internet   td.price-col,
+    tr.src-rag        td.price-col { background: var(--yellow-lt); }
+    tr.src-not_found  td.price-col { background: var(--red-lt); color: var(--red); }
+    tr.src-consumable td { color: var(--grey); font-style: italic; }
+
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    td.center { text-align: center; }
+
+    /* Legend */
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+      font-size: .82rem;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .dot {
+      width: 13px; height: 13px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    /* ── Update section ── */
+    #update-section { display: none; margin-top: 24px; }
+    .update-hint {
+      color: var(--sub);
+      font-size: .9rem;
+      margin-bottom: 14px;
+      line-height: 1.6;
+    }
+    .update-drop {
+      border: 2px dashed #B0BEC5;
+      border-radius: var(--radius);
+      padding: 28px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+    }
+    .update-drop:hover, .update-drop.drag-over {
+      border-color: var(--green);
+      background: var(--green-lt);
+    }
+    .update-drop p { color: var(--sub); }
+    #update-file-input { display: none; }
+
+    #update-status {
+      margin-top: 12px;
+      padding: 12px 16px;
+      border-radius: 6px;
+      display: none;
+    }
+    #update-status.ok  { background: var(--green-lt);  color: var(--green); }
+    #update-status.err { background: var(--red-lt);    color: var(--red); }
+
+    @media (max-width: 640px) {
+      .card { padding: 18px 14px; }
+      header h1 { font-size: 1.15rem; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <span style="font-size:1.7rem">📋</span>
+  <div>
+    <h1>СМЕТА</h1>
+    <span>Автоматический расчёт спецификаций</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── Upload card ──────────────────────────────── -->
+  <section class="card" id="upload-section">
+    <h2>Загрузить спецификацию</h2>
+
+    <div id="drop-zone" tabindex="0" role="button" aria-label="Выберите PDF файл">
+      <span class="icon">📄</span>
+      <p>Перетащите <strong>PDF файл</strong> сюда<br>или нажмите для выбора</p>
+      <p style="margin-top:8px;font-size:.82rem;color:#90A4AE">Максимум 50 МБ</p>
+      <input type="file" id="file-input" accept=".pdf">
+    </div>
+
+    <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-primary" id="upload-btn" disabled>
+        <span>⬆️</span> Начать расчёт
+      </button>
+      <span id="file-name" style="color:var(--sub);font-size:.9rem"></span>
+    </div>
+  </section>
+
+  <!-- ── Error ──────────────────────────────────── -->
+  <div id="error-section">
+    <strong>Ошибка:</strong> <span id="error-msg"></span>
+    <br><button class="btn btn-secondary" style="margin-top:10px" onclick="resetToUpload()">← Попробовать снова</button>
+  </div>
+
+  <!-- ── Progress card ──────────────────────────── -->
+  <section class="card" id="progress-section">
+    <h2><span class="spinner"></span>Идёт расчёт…</h2>
+    <div class="progress-bar-wrap">
+      <div class="progress-bar" id="progress-bar"></div>
+    </div>
+    <div id="progress-label">Подготовка…</div>
+  </section>
+
+  <!-- ── Results card ───────────────────────────── -->
+  <section class="card" id="results-section">
+    <h2>Результат расчёта</h2>
+
+    <div class="results-meta">
+      <div class="meta-badge" id="meta-filename"></div>
+      <div class="meta-badge total-badge" id="meta-total"></div>
+    </div>
+
+    <div class="actions" style="margin-bottom:16px">
+      <button class="btn btn-success" id="download-btn">
+        <span>⬇️</span> Скачать Excel
+      </button>
+      <button class="btn btn-secondary" id="toggle-update-btn">
+        <span>✏️</span> Загрузить скорректированный Excel
+      </button>
+      <button class="btn btn-secondary" onclick="resetToUpload()">
+        <span>➕</span> Новый расчёт
+      </button>
+    </div>
+
+    <!-- Items table -->
+    <div class="table-wrap">
+      <table id="items-table">
+        <thead>
+          <tr>
+            <th style="width:40px">№</th>
+            <th style="text-align:left;min-width:220px">Наименование</th>
+            <th style="min-width:120px">Тип / Марка</th>
+            <th style="width:60px">Ед.</th>
+            <th style="width:65px">Кол-во</th>
+            <th style="width:110px">Цена мат.</th>
+            <th style="width:110px">Цена работ</th>
+            <th style="width:120px">Итого</th>
+          </tr>
+        </thead>
+        <tbody id="items-body"></tbody>
+      </table>
+    </div>
+
+    <div class="legend">
+      <div class="legend-item"><div class="dot" style="background:var(--green-lt);border:1px solid #A5D6A7"></div> Из прайса</div>
+      <div class="legend-item"><div class="dot" style="background:var(--yellow-lt);border:1px solid #FFF176"></div> Интернет / RAG</div>
+      <div class="legend-item"><div class="dot" style="background:var(--red-lt);border:1px solid #EF9A9A"></div> Не найдено</div>
+      <div class="legend-item"><div class="dot" style="background:var(--orange-lt);border:1px solid #FFCC80"></div> Раздел</div>
+      <div class="legend-item"><div class="dot" style="background:white;border:1px solid #CFD8DC"></div> Расходник</div>
+    </div>
+
+    <!-- ── Update subsection ── -->
+    <div id="update-section">
+      <hr style="margin:24px 0;border:none;border-top:1px solid #ECEFF1">
+      <h2>Загрузить скорректированный Excel</h2>
+      <p class="update-hint">
+        Скачайте Excel, внесите изменения в цены или количества, затем загрузите обновлённый файл.
+        Колонки <em>Наименование</em> и <em>Кол-во</em> обязательны.
+      </p>
+
+      <div class="update-drop" id="update-drop" tabindex="0" role="button">
+        <span style="font-size:2rem">📊</span>
+        <p>Перетащите файл .xlsx / .xls сюда или нажмите</p>
+        <input type="file" id="update-file-input" accept=".xlsx,.xls">
+      </div>
+
+      <div id="update-status"></div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+  // ── State ────────────────────────────────────────────────────
+  let selectedFile = null;
+  let currentCalcId = null;
+  let pollTimer = null;
+
+  // ── Elements ─────────────────────────────────────────────────
+  const dropZone      = document.getElementById('drop-zone');
+  const fileInput     = document.getElementById('file-input');
+  const uploadBtn     = document.getElementById('upload-btn');
+  const fileNameEl    = document.getElementById('file-name');
+  const progressSec   = document.getElementById('progress-section');
+  const progressBar   = document.getElementById('progress-bar');
+  const progressLabel = document.getElementById('progress-label');
+  const errorSec      = document.getElementById('error-section');
+  const errorMsg      = document.getElementById('error-msg');
+  const resultsSec    = document.getElementById('results-section');
+  const uploadSec     = document.getElementById('upload-section');
+  const itemsBody     = document.getElementById('items-body');
+  const metaFilename  = document.getElementById('meta-filename');
+  const metaTotal     = document.getElementById('meta-total');
+  const downloadBtn   = document.getElementById('download-btn');
+  const toggleUpdate  = document.getElementById('toggle-update-btn');
+  const updateSection = document.getElementById('update-section');
+  const updateDrop    = document.getElementById('update-drop');
+  const updateInput   = document.getElementById('update-file-input');
+  const updateStatus  = document.getElementById('update-status');
+
+  // ── Upload drop zone ─────────────────────────────────────────
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') fileInput.click(); });
+
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (f) setFile(f);
+  });
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) setFile(fileInput.files[0]);
+  });
+
+  function setFile(f) {
+    if (!f.name.toLowerCase().endsWith('.pdf')) {
+      showError('Выберите PDF файл.');
+      return;
+    }
+    selectedFile = f;
+    fileNameEl.textContent = f.name;
+    uploadBtn.disabled = false;
+  }
+
+  // ── Upload & start calculation ────────────────────────────────
+  uploadBtn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+    uploadBtn.disabled = true;
+
+    const fd = new FormData();
+    fd.append('file', selectedFile);
+
+    let jobId;
+    try {
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.detail || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      jobId = data.job_id;
+    } catch (err) {
+      showError(err.message);
+      uploadBtn.disabled = false;
+      return;
+    }
+
+    uploadSec.style.display = 'none';
+    showProgress();
+    startPolling(jobId);
+  });
+
+  // ── Polling ───────────────────────────────────────────────────
+  function startPolling(jobId) {
+    pollTimer = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/job/${jobId}`);
+        if (!r.ok) return;
+        const d = await r.json();
+        updateProgress(d);
+        if (d.status === 'done') {
+          clearInterval(pollTimer);
+          await loadAndShowResults(d.calc_id);
+        } else if (d.status === 'error') {
+          clearInterval(pollTimer);
+          showError(d.error_msg || 'Неизвестная ошибка');
+        }
+      } catch (_) { /* network glitch — keep polling */ }
+    }, 1500);
+  }
+
+  function updateProgress(d) {
+    const { pages_done, pages_total, priced, total } = d;
+    let pct = 0;
+    let label = 'Подготовка…';
+
+    if (pages_total > 0) {
+      const pagesPct = (pages_done / pages_total) * 50;   // 0–50 %
+      const pricePct = total > 0 ? (priced / total) * 50 : 0;  // 0–50 %
+      pct = Math.min(99, pagesPct + pricePct);
+      label = `Страниц: ${pages_done}/${pages_total} · Позиций расценено: ${priced}/${total}`;
+    } else if (total > 0) {
+      pct = Math.min(99, (priced / total) * 100);
+      label = `Расценено: ${priced} / ${total}`;
+    }
+
+    progressBar.style.width = pct + '%';
+    progressLabel.textContent = label;
+  }
+
+  // ── Load and display results ──────────────────────────────────
+  async function loadAndShowResults(calcId) {
+    currentCalcId = calcId;
+    const r = await fetch(`/api/calculation/${calcId}`);
+    if (!r.ok) { showError('Не удалось загрузить результат'); return; }
+    const calc = await r.json();
+    renderResults(calc);
+  }
+
+  function renderResults(calc) {
+    progressSec.style.display = 'none';
+    uploadSec.style.display = 'none';
+
+    metaFilename.textContent = calc.pdf_filename || `Расчёт #${calc.id}`;
+    metaTotal.textContent = `Итого: ${fmt(calc.total_cost)} ₽`;
+
+    itemsBody.innerHTML = '';
+    let rowNum = 0;
+    calc.items.forEach(item => {
+      const tr = document.createElement('tr');
+      const src = item.source;
+      tr.className = `src-${src}`;
+
+      if (src === 'section') {
+        tr.innerHTML = `
+          <td class="center">—</td>
+          <td colspan="7" style="font-weight:700">${esc(item.name)}</td>`;
+      } else {
+        rowNum++;
+        const isNoPrice = src === 'not_found';
+        const priceClass = 'price-col';
+        tr.innerHTML = `
+          <td class="center">${rowNum}</td>
+          <td>${esc(item.name)}</td>
+          <td class="center">${esc(item.code)}</td>
+          <td class="center">${esc(item.unit)}</td>
+          <td class="num">${fmt(item.quantity)}</td>
+          <td class="num ${priceClass}">${item.cost_material_per_unit > 0 ? fmt(item.cost_material_per_unit) : '—'}</td>
+          <td class="num ${priceClass}">${item.cost_per_unit > 0 ? fmt(item.cost_per_unit) : (isNoPrice ? '<span style="color:var(--red)">—</span>' : '—')}</td>
+          <td class="num ${priceClass}">${item.total_cost > 0 ? fmt(item.total_cost) : '—'}</td>`;
+      }
+      itemsBody.appendChild(tr);
+    });
+
+    downloadBtn.onclick = () => { window.location = `/api/download/${calc.id}`; };
+
+    resultsSec.style.display = '';
+    updateSection.style.display = 'none';
+  }
+
+  // ── Toggle update panel ───────────────────────────────────────
+  toggleUpdate.addEventListener('click', () => {
+    const visible = updateSection.style.display !== 'none';
+    updateSection.style.display = visible ? 'none' : '';
+    if (!visible) updateSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  // ── Update drop zone ─────────────────────────────────────────
+  updateDrop.addEventListener('click', () => updateInput.click());
+  updateDrop.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') updateInput.click(); });
+
+  updateDrop.addEventListener('dragover', e => { e.preventDefault(); updateDrop.classList.add('drag-over'); });
+  updateDrop.addEventListener('dragleave', () => updateDrop.classList.remove('drag-over'));
+  updateDrop.addEventListener('drop', e => {
+    e.preventDefault();
+    updateDrop.classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (f) uploadUpdate(f);
+  });
+  updateInput.addEventListener('change', () => {
+    if (updateInput.files[0]) uploadUpdate(updateInput.files[0]);
+  });
+
+  async function uploadUpdate(file) {
+    const ext = file.name.toLowerCase();
+    if (!ext.endsWith('.xlsx') && !ext.endsWith('.xls')) {
+      showUpdateStatus('Выберите Excel файл (.xlsx или .xls)', false);
+      return;
+    }
+
+    updateStatus.style.display = 'none';
+    updateDrop.style.opacity = '0.5';
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    try {
+      const r = await fetch(`/api/update/${currentCalcId}`, { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) {
+        showUpdateStatus(d.detail || `Ошибка ${r.status}`, false);
+      } else {
+        const msg = `Обновлено строк: ${d.updated_count}. Новая сумма: ${fmt(d.new_total)} ₽`;
+        showUpdateStatus(msg, true);
+        // Reload the table
+        await loadAndShowResults(currentCalcId);
+        // Keep update panel open
+        updateSection.style.display = '';
+      }
+    } catch (err) {
+      showUpdateStatus('Сетевая ошибка: ' + err.message, false);
+    } finally {
+      updateDrop.style.opacity = '';
+      updateInput.value = '';
+    }
+  }
+
+  function showUpdateStatus(text, ok) {
+    updateStatus.textContent = text;
+    updateStatus.className = ok ? 'ok' : 'err';
+    updateStatus.style.display = '';
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────
+  function showProgress() {
+    errorSec.style.display = 'none';
+    resultsSec.style.display = 'none';
+    progressBar.style.width = '0%';
+    progressLabel.textContent = 'Подготовка…';
+    progressSec.style.display = '';
+  }
+
+  function showError(msg) {
+    if (pollTimer) clearInterval(pollTimer);
+    uploadSec.style.display = '';
+    progressSec.style.display = 'none';
+    resultsSec.style.display = 'none';
+    errorMsg.textContent = msg;
+    errorSec.style.display = '';
+    uploadBtn.disabled = !selectedFile;
+  }
+
+  function resetToUpload() {
+    if (pollTimer) clearInterval(pollTimer);
+    selectedFile = null;
+    currentCalcId = null;
+    fileInput.value = '';
+    fileNameEl.textContent = '';
+    uploadBtn.disabled = true;
+    errorSec.style.display = 'none';
+    progressSec.style.display = 'none';
+    resultsSec.style.display = 'none';
+    uploadSec.style.display = '';
+  }
+
+  function fmt(n) {
+    if (n == null || isNaN(n)) return '—';
+    return Number(n).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+</script>
+</body>
+</html>
