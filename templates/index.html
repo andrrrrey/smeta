@@ -623,7 +623,10 @@
     }
 
     uploadSec.style.display = 'none';
-    showProgress();
+    try { showProgress(); } catch(e) {
+      // fallback: show progress section even if inner init fails
+      progressSec.style.display = '';
+    }
     startPolling(jobId);
   });
 
@@ -656,12 +659,14 @@
     const steps = ['upload','extract','price','done'];
     steps.forEach(s => {
       const el = document.getElementById('step-' + s);
+      if (!el) return;
       el.classList.remove('active','done');
     });
     const idx = steps.indexOf(name);
     steps.forEach((s, i) => {
       const el = document.getElementById('step-' + s);
-      if (i < idx)       el.classList.add('done');
+      if (!el) return;
+      if (i < idx)        el.classList.add('done');
       else if (i === idx) el.classList.add('active');
     });
   }
@@ -819,13 +824,11 @@
   function showProgress() {
     errorSec.style.display = 'none';
     resultsSec.style.display = 'none';
-    progressBar.style.width = '0%';
-    progressPct.textContent = '0%';
-    progressText.textContent = 'Подготовка файла…';
-    statPages.textContent = 'Страниц: —';
-    statPages.classList.remove('active');
-    statItems.textContent = 'Позиций: —';
-    statItems.classList.remove('active');
+    if (progressBar)  progressBar.style.width = '0%';
+    if (progressPct)  progressPct.textContent = '0%';
+    if (progressText) progressText.textContent = 'Подготовка файла…';
+    if (statPages)  { statPages.textContent = 'Страниц: —';  statPages.classList.remove('active'); }
+    if (statItems)  { statItems.textContent = 'Позиций: —';  statItems.classList.remove('active'); }
     setStep('upload');
     progressSec.style.display = '';
   }
