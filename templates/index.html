@@ -624,7 +624,7 @@
 
     // Always show progress immediately — before any logic that could throw
     uploadSec.style.display = 'none';
-    progressSec.style.display = '';
+    progressSec.style.display = 'block';
     errorSec.style.display = 'none';
     resultsSec.style.display = 'none';
     try { showProgress(); } catch(e) { /* fancy init failed — basic loader already visible */ }
@@ -754,14 +754,14 @@
 
     downloadBtn.onclick = () => { window.location = `/api/download/${calc.id}`; };
 
-    resultsSec.style.display = '';
+    resultsSec.style.display = 'block';
     updateSection.style.display = 'none';
   }
 
   // ── Toggle update panel ───────────────────────────────────────
   toggleUpdate.addEventListener('click', () => {
     const visible = updateSection.style.display !== 'none';
-    updateSection.style.display = visible ? 'none' : '';
+    updateSection.style.display = visible ? 'none' : 'block';
     if (!visible) updateSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
@@ -805,7 +805,7 @@
         // Reload the table
         await loadAndShowResults(currentCalcId);
         // Keep update panel open
-        updateSection.style.display = '';
+        updateSection.style.display = 'block';
       }
     } catch (err) {
       showUpdateStatus('Сетевая ошибка: ' + err.message, false);
@@ -818,7 +818,7 @@
   function showUpdateStatus(text, ok) {
     updateStatus.textContent = text;
     updateStatus.className = ok ? 'ok' : 'err';
-    updateStatus.style.display = '';
+    updateStatus.style.display = 'block';
   }
 
   // ── Helpers ───────────────────────────────────────────────────
@@ -831,16 +831,16 @@
     if (statPages)  { statPages.textContent = 'Страниц: —';  statPages.classList.remove('active'); }
     if (statItems)  { statItems.textContent = 'Позиций: —';  statItems.classList.remove('active'); }
     setStep('upload');
-    progressSec.style.display = '';
+    progressSec.style.display = 'block';
   }
 
   function showError(msg) {
     if (pollTimer) clearInterval(pollTimer);
-    uploadSec.style.display = '';
+    uploadSec.style.display = 'block';
     progressSec.style.display = 'none';
     resultsSec.style.display = 'none';
     errorMsg.textContent = msg;
-    errorSec.style.display = '';
+    errorSec.style.display = 'block';
     uploadBtn.disabled = !selectedFile;
   }
 
@@ -854,7 +854,7 @@
     errorSec.style.display = 'none';
     progressSec.style.display = 'none';
     resultsSec.style.display = 'none';
-    uploadSec.style.display = '';
+    uploadSec.style.display = 'block';
   }
 
   function fmt(n) {
