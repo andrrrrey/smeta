@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СМЕТА — Расчёт спецификаций</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -104,32 +105,163 @@
 
     /* ── Progress ── */
     #progress-section { display: none; }
+
+    .loader-card {
+      text-align: center;
+      padding: 48px 32px;
+    }
+
+    /* Animated document icon */
+    .loader-icon-wrap {
+      position: relative;
+      display: inline-block;
+      margin-bottom: 28px;
+    }
+    .loader-icon {
+      font-size: 4rem;
+      display: block;
+      animation: float 2.4s ease-in-out infinite;
+    }
+    .loader-ring {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      border: 3px solid transparent;
+    }
+    .loader-ring-1 {
+      width: 90px; height: 90px;
+      border-top-color: var(--blue);
+      border-right-color: var(--blue);
+      animation: spin 1.1s linear infinite;
+    }
+    .loader-ring-2 {
+      width: 112px; height: 112px;
+      border-bottom-color: #42A5F5;
+      border-left-color: #42A5F5;
+      animation: spin 1.7s linear infinite reverse;
+      opacity: .5;
+    }
+    @keyframes float {
+      0%,100% { transform: translateY(0); }
+      50%      { transform: translateY(-6px); }
+    }
+    @keyframes spin { to { transform: translate(-50%,-50%) rotate(360deg); } }
+
+    /* Steps */
+    .loader-steps {
+      display: flex;
+      justify-content: center;
+      gap: 0;
+      margin-bottom: 32px;
+    }
+    .step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+      max-width: 140px;
+      position: relative;
+    }
+    .step + .step::before {
+      content: '';
+      position: absolute;
+      top: 15px; right: 50%;
+      width: 100%;
+      height: 2px;
+      background: #CFD8DC;
+      z-index: 0;
+    }
+    .step.done + .step::before  { background: var(--blue); }
+    .step-dot {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      border: 2px solid #CFD8DC;
+      background: white;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem;
+      position: relative; z-index: 1;
+      transition: all .4s;
+    }
+    .step.active .step-dot {
+      border-color: var(--blue);
+      background: var(--blue-lt);
+      animation: pulse-dot 1.2s ease-in-out infinite;
+    }
+    .step.done .step-dot {
+      border-color: var(--green);
+      background: var(--green-lt);
+    }
+    @keyframes pulse-dot {
+      0%,100% { box-shadow: 0 0 0 0 rgba(25,118,210,.4); }
+      50%      { box-shadow: 0 0 0 8px rgba(25,118,210,.0); }
+    }
+    .step-label {
+      font-size: .78rem;
+      color: var(--sub);
+      font-weight: 500;
+      text-align: center;
+    }
+    .step.active .step-label { color: var(--blue); font-weight: 700; }
+    .step.done  .step-label  { color: var(--green); }
+
+    /* Progress bar */
     .progress-bar-wrap {
       background: var(--grey-lt);
       border-radius: 99px;
-      height: 14px;
+      height: 10px;
       overflow: hidden;
-      margin: 12px 0 6px;
+      margin: 0 0 10px;
     }
     .progress-bar {
       height: 100%;
-      background: linear-gradient(90deg, var(--blue) 0%, #42A5F5 100%);
+      background: linear-gradient(90deg, var(--blue) 0%, #42A5F5 60%, #80D8FF 100%);
+      background-size: 200% 100%;
       border-radius: 99px;
       width: 0%;
-      transition: width .4s ease;
+      transition: width .5s ease;
+      animation: shimmer 2s linear infinite;
     }
-    #progress-label { color: var(--sub); font-size: .88rem; }
-    .spinner {
-      display: inline-block;
-      width: 18px; height: 18px;
-      border: 3px solid #B0BEC5;
-      border-top-color: var(--blue);
-      border-radius: 50%;
-      animation: spin .7s linear infinite;
-      vertical-align: middle;
-      margin-right: 6px;
+    @keyframes shimmer {
+      0%   { background-position: 200% center; }
+      100% { background-position: -200% center; }
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Stats row */
+    .loader-stats {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+    }
+    .stat-pill {
+      background: var(--blue-lt);
+      border-radius: 99px;
+      padding: 6px 16px;
+      font-size: .85rem;
+      color: var(--blue);
+      font-weight: 600;
+      min-width: 120px;
+      transition: all .3s;
+    }
+    .stat-pill.active { background: var(--blue); color: #fff; }
+
+    #progress-pct {
+      font-size: 2.2rem;
+      font-weight: 800;
+      color: var(--blue);
+      margin-bottom: 8px;
+      font-variant-numeric: tabular-nums;
+      transition: color .3s;
+    }
+    #progress-status-text {
+      color: var(--sub);
+      font-size: .95rem;
+      margin-bottom: 20px;
+      min-height: 1.4em;
+    }
 
     /* ── Error ── */
     #error-section {
@@ -294,12 +426,50 @@
   </div>
 
   <!-- ── Progress card ──────────────────────────── -->
-  <section class="card" id="progress-section">
-    <h2><span class="spinner"></span>Идёт расчёт…</h2>
+  <section class="card loader-card" id="progress-section">
+
+    <!-- Animated icon -->
+    <div class="loader-icon-wrap">
+      <div class="loader-ring loader-ring-2"></div>
+      <div class="loader-ring loader-ring-1"></div>
+      <span class="loader-icon">📄</span>
+    </div>
+
+    <!-- Percentage -->
+    <div id="progress-pct">0%</div>
+    <div id="progress-status-text">Подготовка файла…</div>
+
+    <!-- Steps -->
+    <div class="loader-steps">
+      <div class="step active" id="step-upload">
+        <div class="step-dot">⬆️</div>
+        <span class="step-label">Загрузка</span>
+      </div>
+      <div class="step" id="step-extract">
+        <div class="step-dot">🔍</div>
+        <span class="step-label">Извлечение<br>позиций</span>
+      </div>
+      <div class="step" id="step-price">
+        <div class="step-dot">💰</div>
+        <span class="step-label">Поиск<br>цен</span>
+      </div>
+      <div class="step" id="step-done">
+        <div class="step-dot">✅</div>
+        <span class="step-label">Готово</span>
+      </div>
+    </div>
+
+    <!-- Progress bar -->
     <div class="progress-bar-wrap">
       <div class="progress-bar" id="progress-bar"></div>
     </div>
-    <div id="progress-label">Подготовка…</div>
+
+    <!-- Live stats -->
+    <div class="loader-stats">
+      <div class="stat-pill" id="stat-pages">Страниц: —</div>
+      <div class="stat-pill" id="stat-items">Позиций: —</div>
+    </div>
+
   </section>
 
   <!-- ── Results card ───────────────────────────── -->
@@ -384,7 +554,10 @@
   const fileNameEl    = document.getElementById('file-name');
   const progressSec   = document.getElementById('progress-section');
   const progressBar   = document.getElementById('progress-bar');
-  const progressLabel = document.getElementById('progress-label');
+  const progressPct   = document.getElementById('progress-pct');
+  const progressText  = document.getElementById('progress-status-text');
+  const statPages     = document.getElementById('stat-pages');
+  const statItems     = document.getElementById('stat-items');
   const errorSec      = document.getElementById('error-section');
   const errorMsg      = document.getElementById('error-msg');
   const resultsSec    = document.getElementById('results-section');
@@ -464,6 +637,12 @@
         updateProgress(d);
         if (d.status === 'done') {
           clearInterval(pollTimer);
+          // Briefly show 100% before switching to results
+          progressBar.style.width = '100%';
+          progressPct.textContent = '100%';
+          progressText.textContent = 'Расчёт завершён!';
+          setStep('done');
+          await new Promise(r => setTimeout(r, 600));
           await loadAndShowResults(d.calc_id);
         } else if (d.status === 'error') {
           clearInterval(pollTimer);
@@ -473,23 +652,54 @@
     }, 1500);
   }
 
+  function setStep(name) {
+    const steps = ['upload','extract','price','done'];
+    steps.forEach(s => {
+      const el = document.getElementById('step-' + s);
+      el.classList.remove('active','done');
+    });
+    const idx = steps.indexOf(name);
+    steps.forEach((s, i) => {
+      const el = document.getElementById('step-' + s);
+      if (i < idx)       el.classList.add('done');
+      else if (i === idx) el.classList.add('active');
+    });
+  }
+
   function updateProgress(d) {
     const { pages_done, pages_total, priced, total } = d;
     let pct = 0;
-    let label = 'Подготовка…';
+    let statusText = 'Подготовка файла…';
 
-    if (pages_total > 0) {
-      const pagesPct = (pages_done / pages_total) * 50;   // 0–50 %
-      const pricePct = total > 0 ? (priced / total) * 50 : 0;  // 0–50 %
-      pct = Math.min(99, pagesPct + pricePct);
-      label = `Страниц: ${pages_done}/${pages_total} · Позиций расценено: ${priced}/${total}`;
+    if (pages_total > 0 && pages_done < pages_total) {
+      // Stage 2: extracting pages
+      setStep('extract');
+      pct = Math.min(45, (pages_done / pages_total) * 45);
+      statusText = `Анализируем документ с помощью AI…`;
+      statPages.textContent = `Страниц: ${pages_done} / ${pages_total}`;
+      statPages.classList.add('active');
+    } else if (total > 0 && priced < total) {
+      // Stage 3: pricing items
+      setStep('price');
+      const extractedPct = pages_total > 0 ? 45 : 0;
+      pct = Math.min(95, extractedPct + (priced / total) * (95 - extractedPct));
+      statusText = `Ищем цены для позиций…`;
+      statPages.textContent = `Страниц: ${pages_done}`;
+      statItems.textContent = `Позиций: ${priced} / ${total}`;
+      statItems.classList.add('active');
     } else if (total > 0) {
-      pct = Math.min(99, (priced / total) * 100);
-      label = `Расценено: ${priced} / ${total}`;
+      pct = 99;
+      statusText = 'Финальная обработка…';
+    } else if (pages_total > 0) {
+      setStep('extract');
+      pct = 15;
+      statusText = 'Читаем документ…';
+      statPages.textContent = `Страниц: ${pages_total}`;
     }
 
     progressBar.style.width = pct + '%';
-    progressLabel.textContent = label;
+    progressPct.textContent = Math.round(pct) + '%';
+    progressText.textContent = statusText;
   }
 
   // ── Load and display results ──────────────────────────────────
@@ -610,7 +820,13 @@
     errorSec.style.display = 'none';
     resultsSec.style.display = 'none';
     progressBar.style.width = '0%';
-    progressLabel.textContent = 'Подготовка…';
+    progressPct.textContent = '0%';
+    progressText.textContent = 'Подготовка файла…';
+    statPages.textContent = 'Страниц: —';
+    statPages.classList.remove('active');
+    statItems.textContent = 'Позиций: —';
+    statItems.classList.remove('active');
+    setStep('upload');
     progressSec.style.display = '';
   }
 
