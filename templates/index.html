@@ -622,11 +622,12 @@
       return;
     }
 
+    // Always show progress immediately — before any logic that could throw
     uploadSec.style.display = 'none';
-    try { showProgress(); } catch(e) {
-      // fallback: show progress section even if inner init fails
-      progressSec.style.display = '';
-    }
+    progressSec.style.display = '';
+    errorSec.style.display = 'none';
+    resultsSec.style.display = 'none';
+    try { showProgress(); } catch(e) { /* fancy init failed — basic loader already visible */ }
     startPolling(jobId);
   });
 
